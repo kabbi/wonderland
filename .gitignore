@@ -1,0 +1,33 @@
+
+# Non-free files
+fonts/
+
+# Typical temp or old files
+.~lock.*
+*~
+
+# Limbo object files
+*.dis
+*.sbl
+
+# Useless OS entries
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Object files
+*.out
+*.o
+*.a
+
+# Yacc/bison files
+*.debug
+*.tab.h
+*.tab.c
+
+# Misc
+error.log

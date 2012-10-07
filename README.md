@@ -12,6 +12,5 @@ is owned by google code's inferno mercurial repository,
 and I had some problems converting it properly, really
 sorry for that.
 
-License
-=======
+## License
 See file **NOTICE** for complete license
