@@ -6,20 +6,6 @@ cd
 #start core services
 ndb/cs
 svc/registry
-regannounce -d
-
-#setup registry
-echo tcp!192.168.1.89!16600 persist 1 description '''distributed device net''' path /zubr-note/ > /mnt/registry/new
-
-#start public styx servers
-styxlisten 'tcp!*!16600' export /
-
-#discover and mount all local remote registries
-mount {mntgen} /mnt/registries
-regmount
-
-#scan all the registries and mount ddn folders
-# not implemented yet
 
 #run other scripts
 load std
