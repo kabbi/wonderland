@@ -27,6 +27,7 @@ o.emu
 
 # Yacc/bison files
 *.debug
+!appl/svc/httpd/httpd.debug
 *.tab.h
 *.tab.c
 
