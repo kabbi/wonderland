@@ -313,7 +313,7 @@ copy32to32(Rectangle r)
 }
 
 static void
-copy24to32(Rectangle r)
+copy8to32(Rectangle r)
 {
 	int dx, width;
 	uchar *p, *ep, *lp;
