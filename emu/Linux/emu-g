@@ -16,7 +16,7 @@ dev
 	cmd	cmd
 	indir
 
-	ip	ipif6-posix ipaux
+	ip	ipif-posix ipaux
 	eia
 #	audio	audio
 	mem
