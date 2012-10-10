@@ -17,20 +17,12 @@ Cheshire: module {
 	init: fn(nil: ref Draw->Context, argv: list of string);
 };
 
-# Qroot: con big 16rfffffff;
-
 badmodule(p: string)
 {
 	sys->fprint(sys->fildes(2), "cannot load %s: %r\n", p);
 	raise "fail:bad module";
 }
-DEBUG: con 0;
 
-Entry: adt {
-	refcount: int;
-	path: big;
-};
-refcounts := array[10] of Entry;
 tree: ref Tree;
 nav: ref Navigator;
 
@@ -67,7 +59,6 @@ init(nil: ref Draw->Context, nil: list of string)
 	tree.create(Qroot, dir(".", Sys->DMDIR | 8r555, Qroot));
 	tree.create(Qroot, dir("Hello! Welcome to wonderland!", 8r555, Qwelcome));
 	tree.create(Qroot, dir("No wonders right now, more content later...", 8r555, Qnothing));
-	
 
 	# starting message processing loop
 	for (;;) {
