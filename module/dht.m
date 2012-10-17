@@ -24,29 +24,32 @@ Dht: module
 	REFRESH_TIME:	con 3600;
 	REPLICATE_TIME:	con 3600;
 	REPUBLISH_TIME: con 86400;
+	RANDOMNESS:		con 1000;
 
 	# DHT messages
 	TPing,			# 100
-	Rping,
+	RPing,
 	TStore,			# 102
 	RStore,
 	TFindValue,		# 104
 	RFindValue,
-	TFindNode,		# 106, illegal
+	TFindNode,		# 106
 	RFindNode,
 	Tmax: con 100+iota;
 
 	Key: adt {
-		data: array [BB] of byte;
+		data: array of byte;
 
-		text: fn(nil: self ref Key): string;
-		generate: fn(): ref Key;
+		text: fn(nil: self Key): string;
+		generate: fn(): Key;
 	};
 
 	Node: adt {
 		id: Key;
 		addr: string;
 		rtt: int;		# round-trip time
+
+		text: fn(nil: self Node): string;
 	};
 
 	# DHT message handlers
@@ -63,9 +66,9 @@ Dht: module
 			# to allow two-stage STORE
 			ask: int;
 		FindNode =>
-			# no additional data
+			key: Key;
 		FindValue =>
-			# no additional data
+			key: Key;
 		}
 
 		read:	fn(fd: ref Sys->FD, msize: int): ref Tmsg;
@@ -101,11 +104,15 @@ Dht: module
 		mtype:	fn(nil: self ref Rmsg): int;
 	};
 
-	Contacts: adt {
-		table: array [K] of (list of Nodes);
+	Bucket: adt {
+		nodes: list of Node;
 	};
 
-	Local: module {
+	Contacts: adt {
+		buckets: list of Bucket;
+	};
+
+	Local: adt {
 		node: Node;
 		contacts: Contacts;
 		# store consists of Key, data and last 
@@ -113,6 +120,6 @@ Dht: module
 	};
 
 	init:	fn();
-	start:	fn(dht: ref Dht, localaddr: string, bootstrap: list of Node, id: Key): ref Local;
+	start:	fn(localaddr: string, bootstrap: list of Node, id: Key): ref Local;
 
 };
