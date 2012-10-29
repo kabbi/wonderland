@@ -37,10 +37,15 @@ Dht: module
 	RFindNode,
 	Tmax: con 100+iota;
 
+	# DHT functions error codes
+	EBucketFull,
+	EAlreadyPresent,
+	EMax: con 100+iota;
+
 	Key: adt {
 		data: array of byte;
 
-		text: fn(nil: self Key): string;
+		text: fn(nil: self ref Key): string;
 		generate: fn(): Key;
 	};
 
@@ -49,7 +54,8 @@ Dht: module
 		addr: string;
 		rtt: int;		# round-trip time
 
-		text: fn(nil: self Node): string;
+		text: fn(nil: self ref Node): string;
+		less: fn(nil: self ref Node, other: Node): int;
 	};
 
 	# DHT message handlers
@@ -105,18 +111,45 @@ Dht: module
 	};
 
 	Bucket: adt {
-		nodes: list of Node;
+		nodes: array of Node;
+		minrange: int;
+		maxrange: int;
+		lastaccess: Daytime->Tm;
+
+		isinrange(nil: self ref Bucket, id: Key): int;
+		addnode(nil: self ref Bucket, n: Node): int;
+		getnodes(nil: self ref Bucket, size: int): array of Node;
+		findnode(nil, self ref Bucket, n: Node): int;
 	};
 
 	Contacts: adt {
-		buckets: list of Bucket;
+		buckets: array [] of Bucket;
+
+		addcontact: fn(nil: self ref Contacts, n: ref Node);
+		removecontact: fn(nil: self ref Contacts, id: Key);
+		getnode: fn(nil: self ref Contacts, id: Key): Node;
+		findclosenodes: fn(nil: self ref Contacts, id: Key);
+		touch: fn(nil: self ref Contacts, id: Key);
+		findbucket: fn(nil: self ref Contacts, id: Key): int;
+		split: fn(nil: self ref Contacts, idx: int);
+		randomidinbucket: fn(nil: self ref Contacts, idx: int): Key;
 	};
 
 	Local: adt {
 		node: Node;
 		contacts: Contacts;
-		# store consists of Key, data and last 
+		# store consists of Key, data and last access time
 		store: list of (Key, array of byte, Daytime->Tm);
+
+		# private data
+		timerpid, processpid, serverpid: int;
+
+		# do some periodic processing
+		process: fn(self ref Local, pid: chan of int);
+		# fire the event with some interval
+		timer: fn (self ref Local, event: chan of int);
+		# finish all internal threads and close the server
+		destroy: fn(self ref Local);
 	};
 
 	init:	fn();

@@ -70,10 +70,15 @@ pnodes(a: array of byte, o: int, na: array of Node): int
 
 pnode(a: array of byte, o: int, n: Node): int
 {
-	o = parray(a, o, n.id.data);
+	o = pkey(a, o, n.id);
 	o = pstring(a, o, n.addr);
 	o = p32(a, o, n.rtt);
 	return o;
+}
+
+pkey(a: array of byte, o: int, k: Key): int
+{
+	return parray(a, o, k.data);
 }
 
 parray(a: array of byte, o: int, sa: array of byte): int
@@ -128,8 +133,6 @@ g64(f: array of byte, i: int): big
 
 gstring(a: array of byte, o: int): (string, int)
 {
-	if(o < 0 || o+LEN > len a)
-		return (nil, -1);
 	(str, l) := garray(a, o);
 	if (str == nil)
 		return (nil, -1);
@@ -148,10 +151,26 @@ garray(a: array of byte, o: int): (array of byte, int)
 	return (a[o:e], e);
 }
 
+gkey(a: array of byte, o: int): (ref Key, int)
+{
+	(data, l) := garray(a, o);
+	if (data == nil)
+		return (nil, -1);
+	if (len data != BB)
+		return (nil, -1);
+	return (ref Key(data), l);
+}
+
 gnode(a: array of byte, o: int): (ref Node, int)
 {
-	# TODO: implement
-	return (nil, -1);
+	(key, o1) := gkey(a, o);
+	if (key == nil)
+		return (nil, -1);
+	(addr, o2) := gstring(a, o1);
+	if (addr == nil)
+		return (nil, -1);
+	rtt := g32(a, o2);
+	return (ref Node(key, addr, rtt), o2+BIT32SZ);
 }
 
 gnodes(a: array of byte, o: int): (array of Node, int)
@@ -204,14 +223,14 @@ Tmsg.pack(t: self ref Tmsg): array of byte
 	o = p32(d, o, ds);
 	d[o++] = byte ttag2type[tagof t];
 	o = p32(d, o, t.tag);
-	o = parray(d, o, t.senderID.data);
-	o = parray(d, o, t.targetID.data);
+	o = pkey(d, o, t.senderID);
+	o = pkey(d, o, t.targetID);
 
 	pick m := t {
 	Ping =>
 		# no data
 	Store =>
-		o = parray(d, o, m.key.data);
+		o = pkey(d, o, m.key);
 		o = parray(d, o, m.data);
 		o = p32(d, o, m.ask);
 	FindNode or FindValue =>
@@ -292,7 +311,7 @@ Tmsg.text(t: self ref Tmsg): string
 {
 	if(t == nil)
 		return "nil";
-	s := sys->sprint("Tmsg.%s(%ud,%s->%s,", tmsgname[tagof t], t.tag, t.senderID.text(), t.targetID.text());
+	s := sys->sprint("Tmsg.%s(%ud,%s->%s,", tmsgname[tagof t], t.tag, (ref t.senderID).text(), (ref t.targetID).text());
 	pick m:= t {
 	* =>
 		return s + ",ILLEGAL)";
@@ -300,9 +319,9 @@ Tmsg.text(t: self ref Tmsg): string
 		# no data
 		return s + ")";
 	Store =>
-		return s + sys->sprint("%s,arr[%ud],%ud)", m.key.text(), len m.data, m.ask);
+		return s + sys->sprint("%s,arr[%ud],%ud)", (ref m.key).text(), len m.data, m.ask);
 	FindNode or FindValue =>
-		return s + sys->sprint("%s)", m.key.text());
+		return s + sys->sprint("%s)", (ref m.key).text());
 	}
 }
 
@@ -362,8 +381,8 @@ Rmsg.pack(r: self ref Rmsg): array of byte
 	o = p32(d, o, ds);
 	d[o++] = byte ttag2type[tagof r];
 	o = p32(d, o, r.tag);
-	o = parray(d, o, r.senderID.data);
-	o = parray(d, o, r.targetID.data);
+	o = pkey(d, o, r.senderID);
+	o = pkey(d, o, r.targetIDd);
 
 	pick m := r {
 	Ping =>
@@ -444,7 +463,7 @@ Rmsg.text(r: self ref Rmsg): string
 {
 	if(r == nil)
 		return "nil";
-	s := sys->sprint("Rmsg.%s(%ud,%s->%s,", Rmsgname[tagof r], r.tag, r.senderID.text(), r.targetID.text());
+	s := sys->sprint("Rmsg.%s(%ud,%s->%s,", Rmsgname[tagof r], r.tag, (ref r.senderID).text(), (ref r.targetID).text());
 	pick m:= r {
 	* =>
 		return s + ",ILLEGAL)";
@@ -454,9 +473,23 @@ Rmsg.text(r: self ref Rmsg): string
 	Store =>
 		return s + sys->sprint("%ud)", m.result);
 	FindNode =>
-		return s + sys->sprint("%ud)", len m.nodes);
+		nodes: string;
+		for (i := 0; i<len m.nodes; i++)
+		{
+			if (i)
+				nodes += ",";
+			nodes += (ref m.nodes[i]).text();
+		}
+		return s + sys->sprint("Nodes[%ud](%s)", len m.nodes, nodes);
 	FindValue =>
-		return s + sys->sprint("%ud)", len m.nodes);
+		nodes: string;
+		for (i := 0; i<len m.nodes; i++)
+		{
+			if (i)
+				nodes += ",";
+			nodes += (ref m.nodes[i]).text();
+		}
+		return s + sys->sprint("Nodes[%ud](%s),arr[%ud])", len m.nodes, nodes, len m.value);
 	}
 }
 
@@ -503,11 +536,10 @@ istmsg(f: array of byte): int
 	return (int f[BIT32SZ] & 1) == 0;
 }
 
-Key.text(k: self Key): string
+Key.text(k: self ref Key): string
 {
 	return sys->sprint("Key(%s)", base32->enc(k.data));
 }
-
 Key.generate(): Key
 {
 	data := array [BB] of byte;
@@ -517,9 +549,38 @@ Key.generate(): Key
 	return Key(data);
 }
 
-Node.text(n: self Node): string
+Node.text(n: self ref Node): string
 {
-	return sys->sprint("Node(%s,%s,%ud)", n.id.text(), n.addr, n.rtt);
+	return sys->sprint("Node(%s,%s,%ud)", (ref n.id).text(), n.addr, n.rtt);
+}
+
+Bucket.isinrange(b: self ref Bucket, id: Key): int
+{
+
+}
+Bucket.addnode(b: self ref Bucket, n: Node): int
+{
+	if (len b.nodes >= K)
+		return EBucketFull;
+	if (b.findnode(n) != -1)
+		return EAlreadyPresent;
+	#TODO: actually add the node
+}
+Bucket.getnodes(b: self ref Bucket, size: int): array of Node
+{
+}
+Bucket.findnode(b: self ref Bucket, n: Node): int
+{
+	for (i := 0; i<len b.nodes; i++)
+		if (b.nodes[i] == n)
+			return i;
+	# not found
+	return -1;
+}
+
+Contacts.addcontact(c: self ref Contacts, n: ref Node)
+{
+
 }
 
 start(localaddr: string, bootstrap: list of Node, id: Key): ref Local
