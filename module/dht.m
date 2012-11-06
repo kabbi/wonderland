@@ -118,14 +118,14 @@ Dht: module
 		maxrange: int;
 		lastaccess: Daytime->Tm;
 
-		isinrange(nil: self ref Bucket, id: Key): int;
-		addnode(nil: self ref Bucket, n: Node): int;
-		getnodes(nil: self ref Bucket, size: int): array of Node; #Simly return self.nodes?
-		findnode(nil: self ref Bucket, n: Node): int;
+		isinrange: fn(nil: self ref Bucket, id: Key): int;
+		addnode: fn(nil: self ref Bucket, n: Node): int;
+		getnodes: fn(nil: self ref Bucket, size: int): array of Node; #Simly return self.nodes?
+		findnode: fn(nil: self ref Bucket, n: Node): int;
 	};
 
 	Contacts: adt {
-        buckets: array [] of Bucket;
+        buckets: array of Bucket;
         localid: Key;
 
         addcontact: fn(nil: self ref Contacts, n: ref Node); 
@@ -150,11 +150,11 @@ Dht: module
 		timerpid, processpid, serverpid: int;
 
 		# do some periodic processing
-		process: fn(self ref Local, pid: chan of int);
+		process: fn(nil: self ref Local, pid: chan of int);
 		# fire the event with some interval
-		timer: fn (self ref Local, event: chan of int);
+		timer: fn (nil: self ref Local, event: chan of int);
 		# finish all internal threads and close the server
-		destroy: fn(self ref Local);
+		destroy: fn(nil: self ref Local);
 	};
 
 	init:	fn();
