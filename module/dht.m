@@ -121,20 +121,23 @@ Dht: module
 		isinrange(nil: self ref Bucket, id: Key): int;
 		addnode(nil: self ref Bucket, n: Node): int;
 		getnodes(nil: self ref Bucket, size: int): array of Node; #Simly return self.nodes?
-		findnode(nil, self ref Bucket, n: Node): int;
+		findnode(nil: self ref Bucket, n: Node): int;
 	};
 
 	Contacts: adt {
-		buckets: array [] of Bucket;
+        buckets: array [] of Bucket;
+        localid: Key;
 
-		addcontact: fn(nil: self ref Contacts, n: ref Node);
-		removecontact: fn(nil: self ref Contacts, id: Key);
-		getnode: fn(nil: self ref Contacts, id: Key): Node;
-		findclosenodes: fn(nil: self ref Contacts, id: Key);
-		touch: fn(nil: self ref Contacts, id: Key);
-		findbucket: fn(nil: self ref Contacts, id: Key): int;
-		split: fn(nil: self ref Contacts, idx: int);
-		randomidinbucket: fn(nil: self ref Contacts, idx: int): Key;
+        addcontact: fn(nil: self ref Contacts, n: ref Node); 
+        # Insert node into appropriate bucket 
+        removecontact: fn(nil: self ref Contacts, id: Key); 
+        getnode: fn(nil: self ref Contacts, id: Key): Node;          #TODO
+        findclosenodes: fn(nil: self ref Contacts, id: Key);         #TODO
+        touch: fn(nil: self ref Contacts, idx: int);                 #TODO
+        findbucket: fn(nil: self ref Contacts, id: Key): int; 
+        # Given a node id, return the position of the corresponding bucket
+        split: fn(nil: self ref Contacts, idx: int); 
+        randomidinbucket: fn(nil: self ref Contacts, idx: int): Key; 
 	};
 
 	Local: adt {
@@ -155,6 +158,6 @@ Dht: module
 	};
 
 	init:	fn();
-	start:	fn(localaddr: string, bootstrap: list of Node, id: Key): ref Local;
+	start:	fn(localaddr: string, bootstrap: ref Node, id: Key): ref Local;
 
 };

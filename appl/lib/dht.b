@@ -578,11 +578,11 @@ Bucket.isinrange(b: self ref Bucket, id: Key): int
 }
 Bucket.addnode(b: self ref Bucket, n: Node): int
 {
-	if (len b.nodes >= K)
-		return EBucketFull;
-	if (b.findnode(n) != -1)
-		return EAlreadyPresent;
-    b.nodes = b.nodes :: n;
+    if (len b.nodes >= K)
+        return EBucketFull;
+    if (b.findnode(n) != -1)
+        return EAlreadyPresent; # Wouldn't it be better to automaticaly update?
+    b.nodes[len b.nodes:] = n; 
     return 0;
 }
 Bucket.getnodes(b: self ref Bucket, size: int): array of Node
@@ -600,7 +600,66 @@ Bucket.findnode(b: self ref Bucket, n: Node): int
 
 Contacts.addcontact(c: self ref Contacts, n: ref Node)
 {
-
+    bucketInd = c.findbucket(n.key);
+    #TODO: Update lastaccess time?
+    case buckets[bucketInd].addnode(n)
+    {
+        * =>
+            #Success, nothing to do here.
+        EbucketFull => 
+        #TODO: Substitute to section 2.2 (see l.152 of p2plib)
+        if (buckets[bucketInd].isinarnge(c.localid))
+        {
+            c.split(bucketInd);
+            c.addcontact(n);
+        }
+        EAlreadyPresent =>
+            c.removecontact(n.key);
+            c.addcontact(n);
+    }
+}
+Contacts.split(c: self ref Contacts, idx: key)
+{
+    #TODO: Update lastaccess time?
+    src := c.buckets[idx];
+    l := Bucket(array[] of Node, src.minrange, (src.minrange + src.maxrange) / 2);
+    r := Bucket(array[] of Node, l.minrange + 1, src.maxrange);
+    for (i := 0; i < len src.nodes; i++)
+    {
+        n := src.nodes[i];
+        if (l.isinrange(n))
+            l.addnode(n);
+        else
+            r.addnode(n);
+    }
+    c.buckets[idx:idx+1] = array of {l, r};
+}
+Contacts.removecontact(c: self ref Contacts, id: Key)
+{
+    trgbucket := ref c.buckets[c.findbucket(id.key)];
+    idx := trgbucket.findnode(id);
+    *trgbucket = *trgbucket[:idx] + *trgbucket[idx+1:];
+}
+Contacts.findbucket(c: self ref Contacts, id Key): int
+{
+    for (i := 0; i < len c.buckets; i++)
+        if (c.buckets[i].isinrange(id))
+            return i;
+    # not found
+    return -1;
+}
+Contacts.randomidinbucket(c: self ref Contacts, idx: int): Key
+{
+    b := c.buckets[idx];
+    l := array [BB] of {(b.minrange / 8) => byte (1 << (b.minrange % 8)), * => 0};
+    h := array [BB] of {0 .. ((b.minrange / 8) - 1) => byte (1 << (b.minrange % 8)), * => 0};
+    ret := Key.generate();
+    for (i := 0; i < BB; i++)
+    {
+        ret.data[i] |= l[i];
+        ret.data[i] &= h[i];
+    }
+    return ret;
 }
 
 start(localaddr: string, bootstrap: list of Node, id: Key): ref Local
