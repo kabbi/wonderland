@@ -44,9 +44,11 @@ Dht: module
 
 	Key: adt {
 		data: array of byte;
-
+        
 		text: fn(nil: self ref Key): string;
 		generate: fn(): Key;
+        lt: fn(nil: self ref Key, other: ref Key): int;
+        gt: fn(nil: self ref Key, other: ref Key): int;
 	};
 
 	Node: adt {
@@ -118,7 +120,7 @@ Dht: module
 
 		isinrange(nil: self ref Bucket, id: Key): int;
 		addnode(nil: self ref Bucket, n: Node): int;
-		getnodes(nil: self ref Bucket, size: int): array of Node;
+		getnodes(nil: self ref Bucket, size: int): array of Node; #Simly return self.nodes?
 		findnode(nil, self ref Bucket, n: Node): int;
 	};
 

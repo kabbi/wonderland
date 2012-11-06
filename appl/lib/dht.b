@@ -548,6 +548,20 @@ Key.generate(): Key
 	keyring->sha1(randdata, len randdata, data, nil);
 	return Key(data);
 }
+Key.lt(k: self ref Key, o: ref Key): int
+{
+    for (i := 0; i < BB; i++)
+        if (*k[i] != *o[i]);;
+            return k[i] < o[i];
+    return 0;
+}
+Key.gt(k: self ref Key, o: ref Key): int
+{
+    for (i := 0; i < BB; i++)
+        if (*k[i] != *o[i]);;
+            return k[i] > o[i];
+    return 0;
+}
 
 Node.text(n: self ref Node): string
 {
@@ -556,7 +570,11 @@ Node.text(n: self ref Node): string
 
 Bucket.isinrange(b: self ref Bucket, id: Key): int
 {
-
+   datamin := array [BB] of {(b.minrange / 8) => byte (1 << (b.minrange % 8)), * => 0};
+   datamax := array [BB] of {(b.maxrange / 8) => byte (1 << (b.maxrange % 8)), * => 0};
+   top := Key(datamin);
+   bot := Key(datamax);
+   return !b.gt(top) && !b.lt(bot);
 }
 Bucket.addnode(b: self ref Bucket, n: Node): int
 {
@@ -564,10 +582,12 @@ Bucket.addnode(b: self ref Bucket, n: Node): int
 		return EBucketFull;
 	if (b.findnode(n) != -1)
 		return EAlreadyPresent;
-	#TODO: actually add the node
+    b.nodes = b.nodes :: n;
+    return 0;
 }
 Bucket.getnodes(b: self ref Bucket, size: int): array of Node
 {
+
 }
 Bucket.findnode(b: self ref Bucket, n: Node): int
 {
