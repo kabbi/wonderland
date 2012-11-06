@@ -57,7 +57,6 @@ Dht: module
 		rtt: int;		# round-trip time
 
 		text: fn(nil: self ref Node): string;
-		less: fn(nil: self ref Node, other: Node): int;
 	};
 
 	# DHT message handlers
