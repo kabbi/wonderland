@@ -2,13 +2,14 @@ implement Dht;
 
 include "sys.m";
     sys: Sys;
-include "daytime.m";
 include "keyring.m";
     keyring: Keyring;
 include "encoding.m";
     base32: Encoding;
 include "security.m";
     random: Random;
+include "daytime.m";
+    daytime: Daytime;
 
 include "dht.m";
 
@@ -56,6 +57,12 @@ init()
     if (random == nil)
     {
         sys->fprint(sys->fildes(2), "cannot load random: %r\n");
+        raise "fail:bad module";
+    }
+    daytime = load Daytime Daytime->PATH;
+    if (daytime == nil)
+    {
+        sys->fprint(sys->fildes(2), "cannot load daytime: %r\n");
         raise "fail:bad module";
     }
 }
@@ -584,7 +591,7 @@ Bucket.addnode(b: self ref Bucket, n: Node): int
 {
     if (len b.nodes >= K)
         return EBucketFull;
-    if (b.findnode(n) != -1)
+    if (b.findnode(n.id) != -1)
         return EAlreadyPresent; # Wouldn't it be better to automaticaly update?
     b.nodes[len b.nodes] = n; 
     return 0;
@@ -593,10 +600,10 @@ Bucket.getnodes(b: self ref Bucket, size: int): array of Node
 {
 
 }
-Bucket.findnode(b: self ref Bucket, n: Node): int
+Bucket.findnode(b: self ref Bucket, id: Key): int
 {
     for (i := 0; i<len b.nodes; i++)
-        if (b.nodes[i].id.data == n.id.data)
+        if (b.nodes[i].id.data == id.data)
             return i;
     # not found
     return -1;
@@ -644,8 +651,11 @@ Contacts.removecontact(c: self ref Contacts, id: Key)
 {
     trgbucket := ref c.buckets[c.findbucket(id)];
     # construct and find dummy Node
-    idx := trgbucket.findnode(Node(id, "", 0));
-    trgbucket.nodes[idx:] = trgbucket.nodes[idx+1:];
+    idx := trgbucket.findnode(id);
+    nodes := array [len trgbucket.nodes - 1] of Node;
+    nodes[:] = trgbucket.nodes[:idx];
+    nodes[idx:] = trgbucket.nodes[idx+1:];
+    trgbucket.nodes = nodes;
 }
 Contacts.findbucket(c: self ref Contacts, id: Key): int
 {
@@ -675,11 +685,25 @@ Contacts.randomidinbucket(c: self ref Contacts, idx: int): Key
     }
     return ret;
 }
+Contacts.touch(c: self ref Contacts, idx: int)
+{
+    c.buckets[idx].lastaccess = *daytime->local(daytime->now());
+}
+Contacts.getnode(c: self ref Contacts, id: Key): ref Node
+{
+    idx := c.findbucket(id);
+    if (idx == -1)
+        return nil;
+    nodeIdx := (ref c.buckets[idx]).findnode(id);
+    if (nodeIdx == -1)
+        return nil;
+    return ref c.buckets[idx].nodes[nodeIdx];
+}
 
 start(localaddr: string, bootstrap: ref Node, id: Key): ref Local
 {
     node: Node;
     contacts: Contacts;
     store: list of (Key, array of byte, Daytime->Tm);
-    return ref Local(node, contacts, store, 0, 0, 0);
+    return ref Local(node, contacts, store, 0, 0, Sys->Connection(nil, nil, ""));
 }

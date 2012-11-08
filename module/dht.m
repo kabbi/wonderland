@@ -120,7 +120,7 @@ Dht: module
 		isinrange: fn(nil: self ref Bucket, id: Key): int;
 		addnode: fn(nil: self ref Bucket, n: Node): int;
 		getnodes: fn(nil: self ref Bucket, size: int): array of Node; #Simly return self.nodes?
-		findnode: fn(nil: self ref Bucket, n: Node): int;
+		findnode: fn(nil: self ref Bucket, id: Key): int;
 	};
 
 	Contacts: adt {
@@ -130,9 +130,9 @@ Dht: module
         addcontact: fn(nil: self ref Contacts, n: ref Node); 
         # Insert node into appropriate bucket 
         removecontact: fn(nil: self ref Contacts, id: Key); 
-        getnode: fn(nil: self ref Contacts, id: Key): Node;          #TODO
+        getnode: fn(nil: self ref Contacts, id: Key): ref Node;
         findclosenodes: fn(nil: self ref Contacts, id: Key);         #TODO
-        touch: fn(nil: self ref Contacts, idx: int);                 #TODO
+        touch: fn(nil: self ref Contacts, idx: int);
         findbucket: fn(nil: self ref Contacts, id: Key): int; 
         # Given a node id, return the position of the corresponding bucket
         split: fn(nil: self ref Contacts, idx: int); 
@@ -146,7 +146,8 @@ Dht: module
 		store: list of (Key, array of byte, Daytime->Tm);
 
 		# private data
-		timerpid, processpid, serverpid: int;
+		timerpid, processpid: int;
+		server: Sys->Connection;
 
 		# do some periodic processing
 		process: fn(nil: self ref Local, pid: chan of int);
