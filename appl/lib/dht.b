@@ -10,6 +10,8 @@ include "security.m";
     random: Random;
 include "daytime.m";
     daytime: Daytime;
+include "math.m";
+    math: Math;
 
 include "dht.m";
 
@@ -63,6 +65,12 @@ init()
     if (daytime == nil)
     {
         sys->fprint(sys->fildes(2), "cannot load daytime: %r\n");
+        raise "fail:bad module";
+    }
+    math = load Math Math->PATH;
+    if (math == nil)
+    {
+        sys->fprint(sys->fildes(2), "cannot load math: %r\n");
         raise "fail:bad module";
     }
 }
@@ -698,6 +706,30 @@ Contacts.getnode(c: self ref Contacts, id: Key): ref Node
     if (nodeIdx == -1)
         return nil;
     return ref c.buckets[idx].nodes[nodeIdx];
+}
+Contacts.findclosenodes(c: self ref Contacts, id: Key): array of Node
+{
+    bucketIdx := c.findbucket(id);
+    nodes := (ref c.buckets[bucketIdx]).getnodes(K);
+    (i, mod, sign) := (1, 1, 1);
+    ablemove := (bucketIdx + int math->fabs(real i) < len c.buckets) || (bucketIdx - int math->fabs(real i) >= 0);
+    buffer, newnodes: array of Node;
+    while (len nodes < K && ablemove) 
+    {
+	    if ((bucketIdx + i < len c.buckets) && (bucketIdx + i >= 0))
+	    {
+	        newnodes = (ref c.buckets[bucketIdx + i]).getnodes(K - len nodes);
+	        buffer := array[len nodes + len buffer] of Node;
+	        buffer[:] = nodes[:];
+	        buffer[len nodes:] = newnodes[:];
+	        nodes = buffer;
+	    }
+	    mod++; 
+	    sign *= -1;
+	    i += mod * sign;
+            ablemove := (bucketIdx + int math->fabs(real i) < len c.buckets) || (bucketIdx - int math->fabs(real i) >= 0);
+    }
+    return nodes;
 }
 
 start(localaddr: string, bootstrap: ref Node, id: Key): ref Local
