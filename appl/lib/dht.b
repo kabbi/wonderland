@@ -566,14 +566,14 @@ Key.generate(): Key
 Key.lt(k: self ref Key, o: ref Key): int
 {
     for (i := 0; i < BB; i++)
-        if (k.data[i] != o.data[i]);;
+        if (k.data[i] != o.data[i])
             return k.data[i] < o.data[i];
     return 0;
 }
 Key.gt(k: self ref Key, o: ref Key): int
 {
     for (i := 0; i < BB; i++)
-        if (k.data[i] != o.data[i]);;
+        if (k.data[i] != o.data[i])
             return k.data[i] > o.data[i];
     return 0;
 }
@@ -606,7 +606,8 @@ Bucket.addnode(b: self ref Bucket, n: Node): int
 }
 Bucket.getnodes(b: self ref Bucket, size: int): array of Node
 {
-    return b.nodes;
+    # return 'size' last nodes
+    return b.nodes[len b.nodes - size - 1:];
 }
 Bucket.findnode(b: self ref Bucket, id: Key): int
 {
@@ -760,13 +761,28 @@ killpid(pid: int)
     if(fd != nil)
         sys->fprint(fd, "kill");
 }
-Local.process(l: self ref Local)
+Local.process(l: self ref Local, conn: Sys->Connection)
 {
     l.processpid = sys->pctl(0, nil);
+
+    # reading incoming packets
+    buffer := array [60000] of byte;
+    conn.dfd = sys->open(conn.dir + "/data", Sys->OREAD);
+    while (1)
+    {
+        bytesread := sys->read(conn.dfd, buffer, len buffer);
+        # actually processing data here...
+    }
 }
 Local.timer(l: self ref Local)
 {
     l.timerpid = sys->pctl(0, nil);
+
+    while (1)
+    {
+        # do something really usefull here...
+        sys->sleep(1000);
+    }
 }
 Local.destroy(l: self ref Local)
 {
@@ -781,9 +797,14 @@ start(localaddr: string, bootstrap: ref Node, id: Key): ref Local
     node: Node;
     contacts: Contacts;
     store: list of (Key, array of byte, Daytime->Tm);
-    server := ref Local(node, contacts, store, 0, 0, Sys->Connection(nil, nil, ""));
+    server := ref Local(node, contacts, store, 0, 0);
 
-    spawn server.process();
+    # try to announce connection
+    (err, c) := sys->announce(localaddr);
+    if (err != 0)
+        return nil;
+
+    spawn server.process(c);
     spawn server.timer();
 
     return server;

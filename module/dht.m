@@ -147,10 +147,9 @@ Dht: module
 
 		# private data
 		timerpid, processpid: int;
-		server: Sys->Connection;
 
 		# do some periodic processing
-		process: fn(nil: self ref Local);
+		process: fn(nil: self ref Local, conn: Sys->Connection);
 		# fire the event with some interval
 		timer: fn (nil: self ref Local);
 		# finish all internal threads and close the server
