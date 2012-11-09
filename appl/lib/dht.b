@@ -606,7 +606,7 @@ Bucket.addnode(b: self ref Bucket, n: Node): int
 }
 Bucket.getnodes(b: self ref Bucket, size: int): array of Node
 {
-
+    return b.nodes;
 }
 Bucket.findnode(b: self ref Bucket, id: Key): int
 {
@@ -732,10 +732,37 @@ Contacts.findclosenodes(c: self ref Contacts, id: Key): array of Node
     return nodes;
 }
 
+killpid(pid: int)
+{
+    fd := sys->open("#p/"+(string pid)+"/ctl", sys->OWRITE);
+    if(fd != nil)
+        sys->fprint(fd, "kill");
+}
+Local.process(l: self ref Local)
+{
+    l.processpid = sys->pctl(0, nil);
+}
+Local.timer(l: self ref Local)
+{
+    l.timerpid = sys->pctl(0, nil);
+}
+Local.destroy(l: self ref Local)
+{
+    # just kill everybody
+    killpid(l.processpid);
+    killpid(l.timerpid);
+}
+
+
 start(localaddr: string, bootstrap: ref Node, id: Key): ref Local
 {
     node: Node;
     contacts: Contacts;
     store: list of (Key, array of byte, Daytime->Tm);
-    return ref Local(node, contacts, store, 0, 0, Sys->Connection(nil, nil, ""));
+    server := ref Local(node, contacts, store, 0, 0, Sys->Connection(nil, nil, ""));
+
+    spawn server.process();
+    spawn server.timer();
+
+    return server;
 }

@@ -150,9 +150,9 @@ Dht: module
 		server: Sys->Connection;
 
 		# do some periodic processing
-		process: fn(nil: self ref Local, pid: chan of int);
+		process: fn(nil: self ref Local);
 		# fire the event with some interval
-		timer: fn (nil: self ref Local, event: chan of int);
+		timer: fn (nil: self ref Local);
 		# finish all internal threads and close the server
 		destroy: fn(nil: self ref Local);
 	};
