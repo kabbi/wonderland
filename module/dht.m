@@ -121,6 +121,7 @@ Dht: module
 		addnode: fn(nil: self ref Bucket, n: Node): int;
 		getnodes: fn(nil: self ref Bucket, size: int): array of Node;
 		findnode: fn(nil: self ref Bucket, id: Key): int;
+        print: fn(nil: self ref Bucket, tabs: int); #TODO
 	};
 
 	Contacts: adt {
@@ -128,15 +129,14 @@ Dht: module
         localid: Key;
 
         addcontact: fn(nil: self ref Contacts, n: ref Node); 
-        # Insert node into appropriate bucket 
         removecontact: fn(nil: self ref Contacts, id: Key); 
         getnode: fn(nil: self ref Contacts, id: Key): ref Node;
         findclosenodes: fn(nil: self ref Contacts, id: Key): array of Node;
         touch: fn(nil: self ref Contacts, idx: int);
         findbucket: fn(nil: self ref Contacts, id: Key): int; 
-        # Given a node id, return the position of the corresponding bucket
         split: fn(nil: self ref Contacts, idx: int); 
         randomidinbucket: fn(nil: self ref Contacts, idx: int): Key; 
+        print: fn(nil: self ref Contacts, tabs: int);
 	};
 
 	Local: adt {

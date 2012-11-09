@@ -616,6 +616,21 @@ Bucket.findnode(b: self ref Bucket, id: Key): int
     # not found
     return -1;
 }
+Bucket.print(b: self ref Bucket, tabs: int)
+{
+    indent := string array[tabs] of {* => byte '\t'}; 
+    minrange := array [BB] of byte;
+    maxrange := array [BB] of byte;
+    minrange[b.minrange / 8] = byte (1 << (b.minrange % 8));
+    maxrange[b.maxrange / 8] = byte (1 << (b.maxrange % 8));
+
+    sys->print("%s(Bucket [lastaccess=%s]\n", indent, daytime->text(ref b.lastaccess));
+    sys->print("%s        [minrange=%s]\n", indent, base32->enc(minrange));
+    sys->print("%s        Nodes:\n", indent);
+    for (i := 0; i < len b.nodes; i++)
+        sys->print("%s             %s:\n", indent, (ref b.nodes[i]).text());
+    sys->print("%s        [maxrange=%s])\n", indent, base32->enc(maxrange));
+}
 
 Contacts.addcontact(c: self ref Contacts, n: ref Node)
 {
@@ -730,6 +745,13 @@ Contacts.findclosenodes(c: self ref Contacts, id: Key): array of Node
             ablemove := (bucketIdx + int math->fabs(real i) < len c.buckets) || (bucketIdx - int math->fabs(real i) >= 0);
     }
     return nodes;
+}
+Contacts.print(c: self ref Contacts, tabs: int)
+{
+    indent := string array[tabs] of {* => byte '\t'}; 
+    sys->print("%sContacts [key=%s]\n", indent, (ref c.localid).text());
+    for (i := 0; i < len c.buckets; i++)
+        (ref c.buckets[i]).print(tabs + 1);
 }
 
 killpid(pid: int)
