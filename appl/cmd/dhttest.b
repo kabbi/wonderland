@@ -27,8 +27,13 @@ init(nil: ref Draw->Context, nil: list of string)
 		badmodule(Dht->PATH);
 	dht->init();
 
-	local := dht->start("127.0.0.1:1234", ref Node(Key.generate(),
+	local := dht->start("udp!127.0.0.1!1234", ref Node(Key.generate(),
 		"nil", 0), Key.generate());
+	if (local == nil)
+	{
+		sys->print("failed to start server!\n");
+		return;
+	}
 
 	sys->print("generating some random keys\n");
 	key1 := ref Key.generate();
@@ -49,9 +54,9 @@ init(nil: ref Draw->Context, nil: list of string)
 	sys->print("\n");
 
 	sys->print("adding them to the contacts\n");
-	(ref local.contacts).addcontact(node1);
-	(ref local.contacts).addcontact(node2);
-	(ref local.contacts).print(0);
+	#(ref local.contacts).addcontact(node1);
+	#(ref local.contacts).addcontact(node2);
+	#(ref local.contacts).print(0);
 	sys->print("\n");
 
 	sys->print("cleaning up\n");
