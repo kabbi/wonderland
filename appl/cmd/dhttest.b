@@ -55,10 +55,18 @@ init(nil: ref Draw->Context, nil: list of string)
 	sys->print("\n");
 
 	sys->print("adding them to the contacts\n");
-	(ref local.contacts).print(0);
-	(ref local.contacts).addcontact(node1);
-	#(ref local.contacts).addcontact(node2);
-	(ref local.contacts).print(0);
+	local.contacts.print(0);
+	local.contacts.addcontact(node1);
+	local.contacts.addcontact(node2);
+	local.contacts.addcontact(node1);
+	local.contacts.addcontact(node2);
+	local.contacts.print(0);
+	for (i := 0; i < 10; i++)
+	{
+		node := ref Node(Key.generate(), "addrx", 0);
+		local.contacts.addcontact(node);
+	}
+	local.contacts.print(0);
 	sys->print("\n");
 
 	sys->print("cleaning up\n");

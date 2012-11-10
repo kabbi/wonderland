@@ -16,10 +16,10 @@ Dht: module
 	# or http://www.freezepage.com/1350050954SJTTPDWBEX
 
 	# DHT constants
-	ALPHA:	con 3;
+	ALPHA:	con 1;
 	B:		con 160;
 	BB:		con B/8; # B in bytes
-	K:		con 20;
+	K:		con 3;
 	EXPIRE_TIME:	con 86410;
 	REFRESH_TIME:	con 3600;
 	REPLICATE_TIME:	con 3600;
@@ -47,6 +47,7 @@ Dht: module
         
 		text: fn(nil: self ref Key): string;
 		generate: fn(): Key;
+		frompow2: fn(pow: int): Key;
         lt: fn(nil: self ref Key, other: ref Key): int;
         gt: fn(nil: self ref Key, other: ref Key): int;
 	};
@@ -125,7 +126,7 @@ Dht: module
 	};
 
 	Contacts: adt {
-        buckets: array of Bucket;
+        buckets: array of ref Bucket;
         localid: Key;
 
         addcontact: fn(nil: self ref Contacts, n: ref Node); 
@@ -141,7 +142,7 @@ Dht: module
 
 	Local: adt {
 		node: Node;
-		contacts: Contacts;
+		contacts: ref Contacts;
 		# store consists of Key, data and last access time
 		store: list of (Key, array of byte, Daytime->Tm);
 

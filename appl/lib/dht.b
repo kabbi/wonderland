@@ -5,7 +5,7 @@ include "sys.m";
 include "keyring.m";
     keyring: Keyring;
 include "encoding.m";
-    base32: Encoding;
+    base16: Encoding;
 include "security.m";
     random: Random;
 include "daytime.m";
@@ -49,10 +49,10 @@ init()
         sys->fprint(sys->fildes(2), "cannot load keyring: %r\n");
         raise "fail:bad module";
     }
-    base32 = load Encoding Encoding->BASE32PATH;
-    if (base32 == nil)
+    base16 = load Encoding Encoding->BASE16PATH;
+    if (base16 == nil)
     {
-        sys->fprint(sys->fildes(2), "cannot load base64: %r\n");
+        sys->fprint(sys->fildes(2), "cannot load base16: %r\n");
         raise "fail:bad module";
     }
     random = load Random Random->PATH;
@@ -560,7 +560,7 @@ istmsg(f: array of byte): int
 
 Key.text(k: self ref Key): string
 {
-    return sys->sprint("Key(%s)", base32->enc(k.data));
+    return sys->sprint("Key(%s)", base16->enc(k.data));
 }
 Key.generate(): Key
 {
@@ -603,7 +603,7 @@ Bucket.isinrange(b: self ref Bucket, id: Key): int
 {
     bot := Key.frompow2(b.minrange);
     top := Key.frompow2(b.maxrange);
-    return !(ref id).gt(ref top) && !(ref id).lt(ref bot);
+    return (ref id).lt(ref top) && !(ref id).lt(ref bot);
 }
 Bucket.addnode(b: self ref Bucket, n: Node): int
 {
@@ -611,7 +611,10 @@ Bucket.addnode(b: self ref Bucket, n: Node): int
         return EBucketFull;
     if (b.findnode(n.id) != -1)
         return EAlreadyPresent; # Wouldn't it be better to automaticaly update?
-    b.nodes[len b.nodes] = n; 
+    newnodes := array [len b.nodes + 1] of Node;
+    newnodes[:] = b.nodes[:];
+    newnodes[len b.nodes] = n;
+    b.nodes = newnodes;
     return 0;
 }
 Bucket.getnodes(b: self ref Bucket, size: int): array of Node
@@ -646,13 +649,13 @@ Contacts.addcontact(c: self ref Contacts, n: ref Node)
 {
     bucketInd := c.findbucket(n.id);
     #TODO: Update lastaccess time?
-    case (ref c.buckets[bucketInd]).addnode(*n)
+    case c.buckets[bucketInd].addnode(*n)
     {
         * =>
             #Success, nothing to do here.
         EBucketFull => 
         #TODO: Substitute to section 2.2 (see l.152 of p2plib)
-        if ((ref c.buckets[bucketInd]).isinrange(c.localid))
+        if (c.buckets[bucketInd].isinrange(c.localid))
         {
             c.split(bucketInd);
             c.addcontact(n);
@@ -666,23 +669,27 @@ Contacts.split(c: self ref Contacts, idx: int)
 {
     #TODO: Update lastaccess time?
     src := c.buckets[idx];
-    l := ref Bucket(array [0] of Node, src.minrange, (src.minrange + src.maxrange) / 2, src.lastaccess);
-    r := ref Bucket(array [0] of Node, l.minrange + 1, src.maxrange, src.lastaccess);
+    l := ref Bucket(array [0] of Node, src.minrange, src.maxrange - 1, src.lastaccess);
+    r := ref Bucket(array [0] of Node, l.maxrange, src.maxrange, src.lastaccess);
     for (i := 0; i < len src.nodes; i++)
     {
-        n := ref src.nodes[i];
+        n := src.nodes[i];
         if (l.isinrange(n.id))
-            l.addnode(*n);
+            l.addnode(n);
         else
-            r.addnode(*n);
+            r.addnode(n);
     }
-    c.buckets[idx+2:] = c.buckets[idx+1:];
-    c.buckets[idx] = *l;
-    c.buckets[idx+1] = *r;
+    newbuckets := array [len c.buckets + 1] of ref Bucket;
+    newbuckets[:] = c.buckets[:idx];
+    newbuckets[idx] = l;
+    newbuckets[idx + 1] = r;
+    if (idx + 2 < len newbuckets)
+        newbuckets[idx + 2:] = c.buckets[idx + 1:];
+    c.buckets = newbuckets;
 }
 Contacts.removecontact(c: self ref Contacts, id: Key)
 {
-    trgbucket := ref c.buckets[c.findbucket(id)];
+    trgbucket := c.buckets[c.findbucket(id)];
     # construct and find dummy Node
     idx := trgbucket.findnode(id);
     nodes := array [len trgbucket.nodes - 1] of Node;
@@ -693,7 +700,7 @@ Contacts.removecontact(c: self ref Contacts, id: Key)
 Contacts.findbucket(c: self ref Contacts, id: Key): int
 {
     for (i := 0; i < len c.buckets; i++)
-        if ((ref c.buckets[i]).isinrange(id))
+        if (c.buckets[i].isinrange(id))
             return i;
     # not found
     return -1;
@@ -725,7 +732,7 @@ Contacts.getnode(c: self ref Contacts, id: Key): ref Node
     idx := c.findbucket(id);
     if (idx == -1)
         return nil;
-    nodeIdx := (ref c.buckets[idx]).findnode(id);
+    nodeIdx := c.buckets[idx].findnode(id);
     if (nodeIdx == -1)
         return nil;
     return ref c.buckets[idx].nodes[nodeIdx];
@@ -733,7 +740,7 @@ Contacts.getnode(c: self ref Contacts, id: Key): ref Node
 Contacts.findclosenodes(c: self ref Contacts, id: Key): array of Node
 {
     bucketIdx := c.findbucket(id);
-    nodes := (ref c.buckets[bucketIdx]).getnodes(K);
+    nodes := c.buckets[bucketIdx].getnodes(K);
     (i, mod, sign) := (1, 1, 1);
     ablemove := (bucketIdx + abs(i) < len c.buckets) || (bucketIdx - abs(i) >= 0);
     buffer, newnodes: array of Node;
@@ -741,7 +748,7 @@ Contacts.findclosenodes(c: self ref Contacts, id: Key): array of Node
     {
 	    if ((bucketIdx + i < len c.buckets) && (bucketIdx + i >= 0))
 	    {
-	        newnodes = (ref c.buckets[bucketIdx + i]).getnodes(K - len nodes);
+	        newnodes = c.buckets[bucketIdx + i].getnodes(K - len nodes);
 	        buffer := array[len nodes + len buffer] of Node;
 	        buffer[:] = nodes[:];
 	        buffer[len nodes:] = newnodes[:];
@@ -759,7 +766,7 @@ Contacts.print(c: self ref Contacts, tabs: int)
     indent := string array[tabs] of {* => byte '\t'}; 
     sys->print("%sContacts [key=%s]\n", indent, (ref c.localid).text());
     for (i := 0; i < len c.buckets; i++)
-        (ref c.buckets[i]).print(tabs + 1);
+        c.buckets[i].print(tabs + 1);
 }
 
 killpid(pid: int)
@@ -794,28 +801,28 @@ Local.timer(l: self ref Local)
 Local.destroy(l: self ref Local)
 {
     # just kill everybody
-    killpid(l.processpid);
-    killpid(l.timerpid);
+    #killpid(l.processpid);
+    #killpid(l.timerpid);
 }
 
 
 start(localaddr: string, bootstrap: ref Node, id: Key): ref Local
 {
     node := Node(id, localaddr, 0);
-    contacts := Contacts(array [1] of Bucket, id);
+    contacts := ref Contacts(array [1] of ref Bucket, id);
     # construct the first bucket
-    contacts.buckets[0] = Bucket(array [0] of Node, 0, B - 1, *daytime->local(daytime->now()));
+    contacts.buckets[0] = ref Bucket(array [0] of Node, 0, B, *daytime->local(daytime->now()));
 
     store: list of (Key, array of byte, Daytime->Tm);
     server := ref Local(node, contacts, store, 0, 0);
 
     # try to announce connection
-    (err, c) := sys->announce(localaddr);
-    if (err != 0)
-        return nil;
+    #(err, c) := sys->announce(localaddr);
+    #if (err != 0)
+    #    return nil;
 
-    spawn server.process(c);
-    spawn server.timer();
+    #spawn server.process(c);
+    #spawn server.timer();
 
     return server;
 }
