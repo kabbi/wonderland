@@ -35,7 +35,7 @@ init()
 }
 
 
-bigint.text(k: ref bigint): string
+bigint.text(k: bigint): string
 {
     return sys->sprint("key(%s)", base32->enc(k.data));
 }
@@ -90,4 +90,5 @@ bigint.halve(k: self bigint): bigint
         k.data[i] = (k.data[i] >> 1) | carry;
         carry = byte (t << 7);
     }
+    return k;
 }
