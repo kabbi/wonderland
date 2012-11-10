@@ -84,7 +84,7 @@ bigint.dec(k: self bigint): bigint
 bigint.halve(k: self bigint): bigint
 {
     carry := byte 0;
-    t := byte 0;
+    t: byte;
     for (i := 0; i < len k.data; i++)
     {
         t = byte ((int k.data[i] & 1) == 0);
@@ -92,4 +92,17 @@ bigint.halve(k: self bigint): bigint
         carry = byte (t << 7);
     }
     return k;
+}
+bigint.substract(a: self bigint, b: bigint): bigint
+{
+    carry := byte 0;
+    t: byte;
+    for (i := 0; i < len a.data; i++)
+    {
+        t = byte (a.data[i] < b.data[i]);
+        a.data[i] -= b.data[i] + carry;
+        carry = t;
+    }
+    #TODO Throw exception in case we are out of bounds (carry != 0)
+    return a;
 }
