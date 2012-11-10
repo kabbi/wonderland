@@ -1,11 +1,11 @@
-implement bigint;
+implement Bigint;
 
 include "sys.m";
     sys: Sys;
 include "keyring.m";
-    keyring: keyring;
+    keyring: Keyring;
 include "encoding.m";
-    base32: Encoding;
+    base16: Encoding;
 include "security.m";
     random: Random;
 
@@ -35,9 +35,9 @@ init()
 }
 
 
-bigint.text(k: bigint): string
+bigint.text(k: self bigint): string
 {
-    return sys->sprint("key(%s)", base32->enc(k.data));
+    return sys->sprint("key(%s)", base16->enc(k.data));
 }
 bigint.generate(): bigint
 {
@@ -67,7 +67,7 @@ bigint.inc(k: self bigint): bigint
     for (i := len k.data - 1; i >= 0 && carry != 0; i++)
     {
         k.data[i]++;
-        carry = (k.data[i] == 0);
+        carry = (k.data[i] == byte 0);
     }
     return k;
 }
@@ -77,17 +77,18 @@ bigint.dec(k: self bigint): bigint
     for (i := len k.data - 1; i >= 0 && carry != 0; i++)
     {
         k.data[i]--;
-        carry = (k.data[i] == 16rFF);
+        carry = (k.data[i] == byte 16rFF);
     }
     return k;
 }
 bigint.halve(k: self bigint): bigint
 {
-    carry := 0, t := 0;
+    carry := byte 0;
+    t := byte 0;
     for (i := 0; i < len k.data; i++)
     {
-        t = ((k.data & 1) == 0);
-        k.data[i] = (k.data[i] >> 1) | carry;
+        t = byte ((int k.data[i] & 1) == 0);
+        k.data[i] = byte (k.data[i] >> 1) | carry;
         carry = byte (t << 7);
     }
     return k;

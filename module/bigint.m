@@ -1,6 +1,9 @@
-bigint: module
+Bigint: module
 {
     PATH: con "/dis/lib/bigint.dis";
+    RANDOMNESS: con 1000;
+	B:		con 160;
+	BB:		con B/8; # B in bytes
     
     bigint: adt {
 		data: array of byte;
@@ -16,4 +19,4 @@ bigint: module
 	};
 
     init: fn();
-}
+};
