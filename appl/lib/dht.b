@@ -563,6 +563,15 @@ Key.generate(): Key
     keyring->sha1(randdata, len randdata, data, nil);
     return Key(data);
 }
+Key.frompow2(pow: int): Key
+{
+    data := array [BB] of { * => byte 0 };
+    if (pow < 160)
+        data[pow / 8] = byte (1 << (pow % 8));
+    else
+        data = array [BB] of { * => byte 16rFF };
+    return Key(data);
+}
 Key.lt(k: self ref Key, o: ref Key): int
 {
     for (i := 0; i < BB; i++)
@@ -585,14 +594,8 @@ Node.text(n: self ref Node): string
 
 Bucket.isinrange(b: self ref Bucket, id: Key): int
 {
-    datamin := array [BB] of byte;
-    if (b.minrange / 8 < BB)
-        datamin[b.minrange / 8] = byte (1 << (b.minrange % 8));
-    datamax := array [BB] of byte;
-    if (b.maxrange / 8 < BB)
-        datamax[b.maxrange / 8] = byte (1 << (b.maxrange % 8));
-    top := Key(datamin);
-    bot := Key(datamax);
+    bot := Key.frompow2(b.minrange);
+    top := Key.frompow2(b.maxrange);
     return !(ref id).gt(ref top) && !(ref id).lt(ref bot);
 }
 Bucket.addnode(b: self ref Bucket, n: Node): int
@@ -620,17 +623,13 @@ Bucket.findnode(b: self ref Bucket, id: Key): int
 Bucket.print(b: self ref Bucket, tabs: int)
 {
     indent := string array[tabs] of {* => byte '\t'}; 
-    minrange := array [BB] of byte;
-    maxrange := array [BB] of byte;
-    minrange[b.minrange / 8] = byte (1 << (b.minrange % 8));
-    maxrange[b.maxrange / 8] = byte (1 << (b.maxrange % 8));
 
     sys->print("%s(Bucket [lastaccess=%s]\n", indent, daytime->text(ref b.lastaccess));
-    sys->print("%s        [minrange=%s]\n", indent, base32->enc(minrange));
+    sys->print("%s        [minrange=%s]\n", indent, (ref Key.frompow2(b.minrange)).text());
     sys->print("%s        Nodes:\n", indent);
     for (i := 0; i < len b.nodes; i++)
         sys->print("%s             %s:\n", indent, (ref b.nodes[i]).text());
-    sys->print("%s        [maxrange=%s])\n", indent, base32->enc(maxrange));
+    sys->print("%s        [maxrange=%s])\n", indent, (ref Key.frompow2(b.maxrange)).text());
 }
 
 Contacts.addcontact(c: self ref Contacts, n: ref Node)
@@ -693,13 +692,11 @@ Contacts.randomidinbucket(c: self ref Contacts, idx: int): Key
 {
     b := c.buckets[idx];
     l := array [BB] of byte;
-    if (b.minrange / 8 < BB)
-        l[b.minrange / 8] = byte (1 << (b.minrange % 8));
+    l[b.minrange / 8] = byte (1 << (b.minrange % 8));
     h := array [BB] of byte;
-    for (i := 0; i <= b.maxrange; i++)
+    for (i := 0; i <= b.maxrange/8; i++)
         h[i] = byte 16rFF;
-    if (i < BB)
-        h[i + 1] = byte ((1 << ((b.maxrange + 1) % 8)) - 1);
+    h[i + 1] = byte ((1 << ((b.maxrange + 1) % 8)) - 1);
 
     ret := Key.generate();
     for (i = 0; i < BB; i++)
@@ -794,8 +791,11 @@ Local.destroy(l: self ref Local)
 
 start(localaddr: string, bootstrap: ref Node, id: Key): ref Local
 {
-    node: Node;
-    contacts: Contacts;
+    node := Node(id, localaddr, 0);
+    contacts := Contacts(array [1] of Bucket, id);
+    # construct the first bucket
+    contacts.buckets[0] = Bucket(array [0] of Node, 0, B - 1, *daytime->local(daytime->now()));
+
     store: list of (Key, array of byte, Daytime->Tm);
     server := ref Local(node, contacts, store, 0, 0);
 

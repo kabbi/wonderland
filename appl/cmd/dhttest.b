@@ -31,9 +31,10 @@ init(nil: ref Draw->Context, nil: list of string)
 		"nil", 0), Key.generate());
 	if (local == nil)
 	{
-		sys->print("failed to start server!\n");
+		sys->print("failed to start server!\n%r\n");
 		return;
 	}
+	sys->print("started Dht, local id %s\n", (ref local.node.id).text());
 
 	sys->print("generating some random keys\n");
 	key1 := ref Key.generate();
@@ -54,9 +55,10 @@ init(nil: ref Draw->Context, nil: list of string)
 	sys->print("\n");
 
 	sys->print("adding them to the contacts\n");
-	#(ref local.contacts).addcontact(node1);
+	(ref local.contacts).print(0);
+	(ref local.contacts).addcontact(node1);
 	#(ref local.contacts).addcontact(node2);
-	#(ref local.contacts).print(0);
+	(ref local.contacts).print(0);
 	sys->print("\n");
 
 	sys->print("cleaning up\n");
