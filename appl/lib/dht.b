@@ -75,6 +75,13 @@ init()
     }
 }
 
+abs(a: int): int
+{
+    if (a < 0) 
+        a *= -1;
+    return a;
+}
+
 pnodes(a: array of byte, o: int, na: array of Node): int
 {
     o = p32(a, o, len na);
@@ -565,14 +572,14 @@ Key.generate(): Key
 }
 Key.lt(k: self ref Key, o: ref Key): int
 {
-    for (i := 0; i < BB; i++)
+    for (i := BB - 1; i >= 0; i--)
         if (k.data[i] != o.data[i])
             return k.data[i] < o.data[i];
     return 0;
 }
 Key.gt(k: self ref Key, o: ref Key): int
 {
-    for (i := 0; i < BB; i++)
+    for (i := BB - 1; i >= 0; i--)
         if (k.data[i] != o.data[i])
             return k.data[i] > o.data[i];
     return 0;
@@ -607,7 +614,10 @@ Bucket.addnode(b: self ref Bucket, n: Node): int
 Bucket.getnodes(b: self ref Bucket, size: int): array of Node
 {
     # return 'size' last nodes
-    return b.nodes[len b.nodes - size - 1:];
+    if (len b.nodes >= size)
+        return b.nodes[len b.nodes - size:];
+    else
+	return b.nodes;
 }
 Bucket.findnode(b: self ref Bucket, id: Key): int
 {
@@ -728,7 +738,7 @@ Contacts.findclosenodes(c: self ref Contacts, id: Key): array of Node
     bucketIdx := c.findbucket(id);
     nodes := (ref c.buckets[bucketIdx]).getnodes(K);
     (i, mod, sign) := (1, 1, 1);
-    ablemove := (bucketIdx + int math->fabs(real i) < len c.buckets) || (bucketIdx - int math->fabs(real i) >= 0);
+    ablemove := (bucketIdx + abs(i) < len c.buckets) || (bucketIdx - abs(i) >= 0);
     buffer, newnodes: array of Node;
     while (len nodes < K && ablemove) 
     {
@@ -743,7 +753,7 @@ Contacts.findclosenodes(c: self ref Contacts, id: Key): array of Node
 	    mod++; 
 	    sign *= -1;
 	    i += mod * sign;
-            ablemove := (bucketIdx + int math->fabs(real i) < len c.buckets) || (bucketIdx - int math->fabs(real i) >= 0);
+            ablemove := (bucketIdx + abs(i) < len c.buckets) || (bucketIdx - abs(i) >= 0);
     }
     return nodes;
 }
