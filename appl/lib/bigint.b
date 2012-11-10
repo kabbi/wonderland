@@ -3,7 +3,7 @@ implement bigint;
 include "sys.m";
     sys: Sys;
 include "keyring.m";
-    keyring: Keyring;
+    keyring: keyring;
 include "encoding.m";
     base32: Encoding;
 include "security.m";
@@ -20,10 +20,10 @@ init()
         sys->fprint(sys->fildes(2), "cannot load keyring: %r\n");
         raise "fail:bad module";
     }
-    base32 = load Encoding Encoding->BASE32PATH;
-    if (base32 == nil)
+    base16 = load Encoding Encoding->BASE16PATH;
+    if (base16 == nil)
     {
-        sys->fprint(sys->fildes(2), "cannot load base64: %r\n");
+        sys->fprint(sys->fildes(2), "cannot load base16: %r\n");
         raise "fail:bad module";
     }
     random = load Random Random->PATH;
@@ -34,29 +34,60 @@ init()
     }
 }
 
-Key.text(k: self ref Key): string
+
+bigint.text(k: ref bigint): string
 {
-    return sys->sprint("Key(%s)", base32->enc(k.data));
+    return sys->sprint("key(%s)", base32->enc(k.data));
 }
-Key.generate(): Key
+bigint.generate(): bigint
 {
     data := array [BB] of byte;
     # TODO: replace NotQuiteRandom with ReallyRandom
     randdata := random->randombuf(random->NotQuiteRandom, RANDOMNESS);
     keyring->sha1(randdata, len randdata, data, nil);
-    return Key(data);
+    return bigint(data);
 }
-Key.lt(k: self ref Key, o: ref Key): int
+bigint.lt(k: self bigint, o: bigint): int
 {
     for (i := 0; i < len k.data; i++)
         if (k.data[i] != o.data[i])
             return k.data[i] < o.data[i];
     return 0;
 }
-Key.gt(k: self ref Key, o: ref Key): int
+bigint.gt(k: self bigint, o: bigint): int
 {
     for (i := 0; i < len k.data; i++)
         if (k.data[i] != o.data[i])
             return k.data[i] > o.data[i];
     return 0;
+}
+bigint.inc(k: self bigint): bigint
+{
+    carry := 1;
+    for (i := len k.data - 1; i >= 0 && carry != 0; i++)
+    {
+        k.data[i]++;
+        carry = (k.data[i] == 0);
+    }
+    return k;
+}
+bigint.dec(k: self bigint): bigint
+{
+    carry := 1;
+    for (i := len k.data - 1; i >= 0 && carry != 0; i++)
+    {
+        k.data[i]--;
+        carry = (k.data[i] == 16rFF);
+    }
+    return k;
+}
+bigint.halve(k: self bigint): bigint
+{
+    carry := 0, t := 0;
+    for (i := 0; i < len k.data; i++)
+    {
+        t = ((k.data & 1) == 0);
+        k.data[i] = (k.data[i] >> 1) | carry;
+        carry = byte (t << 7);
+    }
 }

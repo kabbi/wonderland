@@ -1,18 +1,19 @@
 bigint: module
 {
-    PATH:	con "/dis/lib/bigint.dis";
+    PATH: con "/dis/lib/bigint.dis";
     
-    Key: adt {
+    bigint: adt {
 		data: array of byte;
         
-		text: fn(nil: self ref Key): string;
-		generate: fn(): Key;
-        lt: fn(nil: self ref Key, other: ref Key): int;
-        gt: fn(nil: self ref Key, other: ref Key): int;
-        inc: fn(nil: self ref Key): Key;
-        dec: fn(nil: self ref Key): Key;
-        halve: fn(nil: self ref Key): Key;
+		text: fn(nil: self bigint): string;
+		generate: fn(): bigint;
+
+        lt: fn(nil: self bigint, other: bigint): int;
+        gt: fn(nil: self bigint, other: bigint): int;
+        inc: fn(nil: self bigint): bigint;
+        dec: fn(nil: self bigint): bigint;
+        halve: fn(nil: self bigint): bigint;
 	};
 
-    init:	fn();
+    init: fn();
 }
