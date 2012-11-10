@@ -97,7 +97,7 @@ bigint.substract(a: self bigint, b: bigint): bigint
 {
     carry := byte 0;
     t: byte;
-    for (i := 0; i < len a.data; i++)
+    for (i := len a.data - 1; i >= 0; i--)
     {
         t = byte (a.data[i] < b.data[i]);
         a.data[i] -= b.data[i] + carry;
