@@ -12,6 +12,10 @@ include "daytime.m";
     daytime: Daytime;
 include "math.m";
     math: Math;
+include "bigint.m";
+    bigintmodule: Bigint;
+    bigint: import bigintmodule;
+    Key: type bigint;
 
 include "dht.m";
 

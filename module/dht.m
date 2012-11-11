@@ -1,8 +1,3 @@
-include "bigint.m";
-    bigintmodule: Bigint;
-    bigint: import bigintmodule;
-    Key: type bigint;
-
 Dht: module
 {
 	PATH:	con "/dis/lib/dht.dis";
