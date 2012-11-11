@@ -64,7 +64,7 @@ bigint.gt(k: self bigint, o: bigint): int
 bigint.inc(k: self bigint): bigint
 {
     carry := 1;
-    for (i := len k.data - 1; i >= 0 && carry != 0; i++)
+    for (i := len k.data - 1; i >= 0 && carry != 0; i--)
     {
         k.data[i]++;
         carry = (k.data[i] == byte 0);
@@ -74,7 +74,7 @@ bigint.inc(k: self bigint): bigint
 bigint.dec(k: self bigint): bigint
 {
     carry := 1;
-    for (i := len k.data - 1; i >= 0 && carry != 0; i++)
+    for (i := len k.data - 1; i >= 0 && carry != 0; i--)
     {
         k.data[i]--;
         carry = (k.data[i] == byte 16rFF);
@@ -84,16 +84,16 @@ bigint.dec(k: self bigint): bigint
 bigint.halve(k: self bigint): bigint
 {
     carry := byte 0;
-    t: byte;
+    t: int;
     for (i := 0; i < len k.data; i++)
     {
-        t = byte ((int k.data[i] & 1) == 0);
+        t = int k.data[i] & 1;
         k.data[i] = byte (k.data[i] >> 1) | carry;
-        carry = byte (t << 7);
+        carry = byte ((byte t) << 7);
     }
     return k;
 }
-bigint.substract(a: self bigint, b: bigint): bigint
+bigint.subtract(a: self bigint, b: bigint): bigint
 {
     carry := byte 0;
     t: byte;

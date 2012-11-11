@@ -15,7 +15,7 @@ Bigint: module
         gt: fn(nil: self bigint, other: bigint): int;
         inc: fn(nil: self bigint): bigint;
         dec: fn(nil: self bigint): bigint;
-        substract: fn(nil: self bigint, b: bigint): bigint;
+        subtract: fn(nil: self bigint, b: bigint): bigint;
         halve: fn(nil: self bigint): bigint;
 	};
 
