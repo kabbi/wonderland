@@ -1,3 +1,8 @@
+include "bigint.m";
+    bigintmodule: Bigint;
+    bigint: import bigintmodule;
+    Key: type bigint;
+
 Dht: module
 {
 	PATH:	con "/dis/lib/dht.dis";
@@ -41,16 +46,6 @@ Dht: module
 	EBucketFull,
 	EAlreadyPresent,
 	EMax: con 100+iota;
-
-	Key: adt {
-		data: array of byte;
-        
-		text: fn(nil: self ref Key): string;
-		generate: fn(): Key;
-		frompow2: fn(pow: int): Key;
-        lt: fn(nil: self ref Key, other: ref Key): int;
-        gt: fn(nil: self ref Key, other: ref Key): int;
-	};
 
 	Node: adt {
 		id: Key;
@@ -114,15 +109,15 @@ Dht: module
 
 	Bucket: adt {
 		nodes: array of Node;
-		minrange: int;
-		maxrange: int;
+		minrange: Key;
+		maxrange: Key;
 		lastaccess: Daytime->Tm;
 
 		isinrange: fn(nil: self ref Bucket, id: Key): int;
 		addnode: fn(nil: self ref Bucket, n: Node): int;
 		getnodes: fn(nil: self ref Bucket, size: int): array of Node;
 		findnode: fn(nil: self ref Bucket, id: Key): int;
-        print: fn(nil: self ref Bucket, tabs: int); #TODO
+        print: fn(nil: self ref Bucket, tabs: int); 
 	};
 
 	Contacts: adt {

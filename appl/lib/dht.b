@@ -73,6 +73,13 @@ init()
         sys->fprint(sys->fildes(2), "cannot load math: %r\n");
         raise "fail:bad module";
     }
+    bigintmodule = load Bigint Bigint->PATH;
+    if (bigintmodule == nil)
+    {
+        sys->fprint(sys->fildes(2), "cannot load bigint: %r\n");
+        raise "fail:bad module";
+    }
+    bigintmodule->init();
 }
 
 abs(a: int): int
@@ -333,7 +340,7 @@ Tmsg.text(t: self ref Tmsg): string
 {
     if(t == nil)
         return "nil";
-    s := sys->sprint("Tmsg.%s(%ud,%s->%s,", tmsgname[tagof t], t.tag, (ref t.senderID).text(), (ref t.targetID).text());
+    s := sys->sprint("Tmsg.%s(%ud,%s->%s,", tmsgname[tagof t], t.tag, t.senderID.text(), t.targetID.text());
     pick m:= t {
     * =>
         return s + ",ILLEGAL)";
@@ -341,9 +348,9 @@ Tmsg.text(t: self ref Tmsg): string
         # no data
         return s + ")";
     Store =>
-        return s + sys->sprint("%s,arr[%ud],%ud)", (ref m.key).text(), len m.data, m.ask);
+        return s + sys->sprint("%s,arr[%ud],%ud)", m.key.text(), len m.data, m.ask);
     FindNode or FindValue =>
-        return s + sys->sprint("%s)", (ref m.key).text());
+        return s + sys->sprint("%s)", m.key.text());
     }
 }
 
@@ -485,7 +492,7 @@ Rmsg.text(r: self ref Rmsg): string
 {
     if(r == nil)
         return "nil";
-    s := sys->sprint("Rmsg.%s(%ud,%s->%s,", Rmsgname[tagof r], r.tag, (ref r.senderID).text(), (ref r.targetID).text());
+    s := sys->sprint("Rmsg.%s(%ud,%s->%s,", Rmsgname[tagof r], r.tag, r.senderID.text(), r.targetID.text());
     pick m:= r {
     * =>
         return s + ",ILLEGAL)";
@@ -558,52 +565,14 @@ istmsg(f: array of byte): int
     return (int f[BIT32SZ] & 1) == 0;
 }
 
-Key.text(k: self ref Key): string
-{
-    return sys->sprint("Key(%s)", base16->enc(k.data));
-}
-Key.generate(): Key
-{
-    data := array [BB] of byte;
-    # TODO: replace NotQuiteRandom with ReallyRandom
-    randdata := random->randombuf(random->NotQuiteRandom, RANDOMNESS);
-    keyring->sha1(randdata, len randdata, data, nil);
-    return Key(data);
-}
-Key.frompow2(pow: int): Key
-{
-    data := array [BB] of { * => byte 0 };
-    if (pow < 160)
-        data[pow / 8] = byte (1 << (pow % 8));
-    else
-        data = array [BB] of { * => byte 16rFF };
-    return Key(data);
-}
-Key.lt(k: self ref Key, o: ref Key): int
-{
-    for (i := BB - 1; i >= 0; i--)
-        if (k.data[i] != o.data[i])
-            return k.data[i] < o.data[i];
-    return 0;
-}
-Key.gt(k: self ref Key, o: ref Key): int
-{
-    for (i := BB - 1; i >= 0; i--)
-        if (k.data[i] != o.data[i])
-            return k.data[i] > o.data[i];
-    return 0;
-}
-
 Node.text(n: self ref Node): string
 {
-    return sys->sprint("Node(%s,%s,%ud)", (ref n.id).text(), n.addr, n.rtt);
+    return sys->sprint("Node(%s,%s,%ud)", n.id.text(), n.addr, n.rtt);
 }
 
 Bucket.isinrange(b: self ref Bucket, id: Key): int
 {
-    bot := Key.frompow2(b.minrange);
-    top := Key.frompow2(b.maxrange);
-    return (ref id).lt(ref top) && !(ref id).lt(ref bot);
+    return id.lt(b.maxrange) && !id.lt(b.minrange);
 }
 Bucket.addnode(b: self ref Bucket, n: Node): int
 {
@@ -638,11 +607,11 @@ Bucket.print(b: self ref Bucket, tabs: int)
     indent := string array[tabs] of {* => byte '\t'}; 
 
     sys->print("%s(Bucket [lastaccess=%s]\n", indent, daytime->text(ref b.lastaccess));
-    sys->print("%s        [minrange=%s]\n", indent, (ref Key.frompow2(b.minrange)).text());
+    sys->print("%s        [minrange=%s]\n", indent, b.minrange.text());
     sys->print("%s        Nodes:\n", indent);
     for (i := 0; i < len b.nodes; i++)
         sys->print("%s             %s:\n", indent, (ref b.nodes[i]).text());
-    sys->print("%s        [maxrange=%s])\n", indent, (ref Key.frompow2(b.maxrange)).text());
+    sys->print("%s        [maxrange=%s])\n", indent, b.maxrange.text());
 }
 
 Contacts.addcontact(c: self ref Contacts, n: ref Node)
@@ -669,8 +638,9 @@ Contacts.split(c: self ref Contacts, idx: int)
 {
     #TODO: Update lastaccess time?
     src := c.buckets[idx];
-    l := ref Bucket(array [0] of Node, src.minrange, src.maxrange - 1, src.lastaccess);
-    r := ref Bucket(array [0] of Node, l.maxrange, src.maxrange, src.lastaccess);
+    mid := src.maxrange.subtract(src.maxrange.subtract(src.minrange).halve()); # m = r - ((r - l) / 2)
+    l := ref Bucket(array [0] of Node, src.minrange, mid, src.lastaccess);
+    r := ref Bucket(array [0] of Node, mid, src.maxrange, src.lastaccess);
     for (i := 0; i < len src.nodes; i++)
     {
         n := src.nodes[i];
@@ -708,19 +678,24 @@ Contacts.findbucket(c: self ref Contacts, id: Key): int
 Contacts.randomidinbucket(c: self ref Contacts, idx: int): Key
 {
     b := c.buckets[idx];
-    l := array [BB] of byte;
-    l[b.minrange / 8] = byte (1 << (b.minrange % 8));
-    h := array [BB] of byte;
-    for (i := 0; i <= b.maxrange/8; i++)
-        h[i] = byte 16rFF;
-    h[i + 1] = byte ((1 << ((b.maxrange + 1) % 8)) - 1);
+    h := b.maxrange;
+    l := b.minrange;
 
     ret := Key.generate();
+    for (i := 0; i < BB; i++)
+    {
+        ret.data[i] &= h.data[i];
+	if ((ret.data[i] ^ h.data[i]) > byte 0)
+	    break;
+    }
     for (i = 0; i < BB; i++)
     {
-        ret.data[i] |= l[i];
-        ret.data[i] &= h[i];
+        ret.data[i] |= l.data[i];
+	if ((ret.data[i] ^ l.data[i]) > byte 0)
+	    break;
     }
+    if (ret.data == h.data)
+        return ret.dec();
     return ret;
 }
 Contacts.touch(c: self ref Contacts, idx: int)
@@ -764,7 +739,7 @@ Contacts.findclosenodes(c: self ref Contacts, id: Key): array of Node
 Contacts.print(c: self ref Contacts, tabs: int)
 {
     indent := string array[tabs] of {* => byte '\t'}; 
-    sys->print("%sContacts [key=%s]\n", indent, (ref c.localid).text());
+    sys->print("%sContacts [key=%s]\n", indent, c.localid.text());
     for (i := 0; i < len c.buckets; i++)
         c.buckets[i].print(tabs + 1);
 }
@@ -811,7 +786,7 @@ start(localaddr: string, bootstrap: ref Node, id: Key): ref Local
     node := Node(id, localaddr, 0);
     contacts := ref Contacts(array [1] of ref Bucket, id);
     # construct the first bucket
-    contacts.buckets[0] = ref Bucket(array [0] of Node, 0, B, *daytime->local(daytime->now()));
+    contacts.buckets[0] = ref Bucket(array [0] of Node, Key(array[BB] of { * => byte 0 }), Key(array[BB] of { * => byte 1 }), *daytime->local(daytime->now()));
 
     store: list of (Key, array of byte, Daytime->Tm);
     server := ref Local(node, contacts, store, 0, 0);
