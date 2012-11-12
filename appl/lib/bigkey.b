@@ -41,10 +41,9 @@ Key.text(k: self Key): string
 }
 Key.generate(): Key
 {
-    data := array [BB] of byte;
     # TODO: replace NotQuiteRandom with ReallyRandom
-    randdata := random->randombuf(random->NotQuiteRandom, RANDOMNESS);
-    keyring->sha1(randdata, len randdata, data, nil);
+    # TODO: maybe really use sha1 here? to maintain good hash-like distribution
+    data := random->randombuf(random->NotQuiteRandom, BB);
     return Key(data);
 }
 Key.lt(k: self Key, o: Key): int
