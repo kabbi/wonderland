@@ -1,4 +1,4 @@
-implement Bigint;
+implement Bigkey;
 
 include "sys.m";
     sys: Sys;
@@ -9,7 +9,7 @@ include "encoding.m";
 include "security.m";
     random: Random;
 
-include "bigint.m";
+include "bigkey.m";
 
 init()
 {
@@ -35,35 +35,35 @@ init()
 }
 
 
-bigint.text(k: self bigint): string
+Key.text(k: self Key): string
 {
     return sys->sprint("key(%s)", base16->enc(k.data));
 }
-bigint.generate(): bigint
+Key.generate(): Key
 {
     data := array [BB] of byte;
     # TODO: replace NotQuiteRandom with ReallyRandom
     randdata := random->randombuf(random->NotQuiteRandom, RANDOMNESS);
     keyring->sha1(randdata, len randdata, data, nil);
-    return bigint(data);
+    return Key(data);
 }
-bigint.lt(k: self bigint, o: bigint): int
+Key.lt(k: self Key, o: Key): int
 {
     for (i := 0; i < len k.data; i++)
         if (k.data[i] != o.data[i])
             return k.data[i] < o.data[i];
     return 0;
 }
-bigint.gt(k: self bigint, o: bigint): int
+Key.gt(k: self Key, o: Key): int
 {
     for (i := 0; i < len k.data; i++)
         if (k.data[i] != o.data[i])
             return k.data[i] > o.data[i];
     return 0;
 }
-bigint.inc(b: self bigint): bigint
+Key.inc(b: self Key): Key
 {
-    k := bigint(array[BB] of { * => byte 0 });
+    k := Key(array[BB] of { * => byte 0 });
     k.data[:] = b.data[:];
     carry := 1;
     for (i := len k.data - 1; i >= 0 && carry != 0; i--)
@@ -73,9 +73,9 @@ bigint.inc(b: self bigint): bigint
     }
     return k;
 }
-bigint.dec(b: self bigint): bigint
+Key.dec(b: self Key): Key
 {
-    k := bigint(array[BB] of { * => byte 0 });
+    k := Key(array[BB] of { * => byte 0 });
     k.data[:] = b.data[:];
     carry := 1;
     for (i := len k.data - 1; i >= 0 && carry != 0; i--)
@@ -85,9 +85,9 @@ bigint.dec(b: self bigint): bigint
     }
     return k;
 }
-bigint.halve(b: self bigint): bigint
+Key.halve(b: self Key): Key
 {
-    k := bigint(array[BB] of { * => byte 0 });
+    k := Key(array[BB] of { * => byte 0 });
     k.data[:] = b.data[:];
     carry := byte 0;
     t: int;
@@ -99,9 +99,9 @@ bigint.halve(b: self bigint): bigint
     }
     return k;
 }
-bigint.subtract(s: self bigint, b: bigint): bigint
+Key.subtract(s: self Key, b: Key): Key
 {
-    a := bigint(array[BB] of { * => byte 0 });
+    a := Key(array[BB] of { * => byte 0 });
     a.data[:] = s.data[:];
     carry := byte 0;
     t: byte;
