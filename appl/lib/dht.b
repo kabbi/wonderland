@@ -12,10 +12,9 @@ include "daytime.m";
     daytime: Daytime;
 include "math.m";
     math: Math;
-include "bigint.m";
-    bigintmodule: Bigint;
-    bigint: import bigintmodule;
-    Key: type bigint;
+include "bigkey.m";
+    bigkeymodule: Bigkey;
+    Key: import bigkeymodule;
 
 include "dht.m";
 
@@ -77,13 +76,13 @@ init()
         sys->fprint(sys->fildes(2), "cannot load math: %r\n");
         raise "fail:bad module";
     }
-    bigintmodule = load Bigint Bigint->PATH;
-    if (bigintmodule == nil)
+    bigkeymodule = load Bigkey Bigkey->PATH;
+    if (bigkeymodule == nil)
     {
-        sys->fprint(sys->fildes(2), "cannot load bigint: %r\n");
+        sys->fprint(sys->fildes(2), "cannot load bigkey: %r\n");
         raise "fail:bad module";
     }
-    bigintmodule->init();
+    bigkeymodule->init();
 }
 
 abs(a: int): int
