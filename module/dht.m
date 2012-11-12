@@ -19,7 +19,7 @@ Dht: module
 	ALPHA:	con 1;
 	B:		con 160;
 	BB:		con B/8; # B in bytes
-	K:		con 3;
+	K:		con 5;
 	EXPIRE_TIME:	con 86410;
 	REFRESH_TIME:	con 3600;
 	REPLICATE_TIME:	con 3600;

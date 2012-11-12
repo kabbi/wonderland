@@ -12,10 +12,9 @@ include "daytime.m";
     daytime: Daytime;
 include "math.m";
     math: Math;
-include "bigint.m";
-    bigintmodule: Bigint;
-    bigint: import bigintmodule;
-    Key: type bigint;
+include "bigkey.m";
+    bigkey: Bigkey;
+    Key: import bigkey;
 
 include "dht.m";
 
@@ -77,13 +76,13 @@ init()
         sys->fprint(sys->fildes(2), "cannot load math: %r\n");
         raise "fail:bad module";
     }
-    bigintmodule = load Bigint Bigint->PATH;
-    if (bigintmodule == nil)
+    bigkey = load Bigkey Bigkey->PATH;
+    if (bigkey == nil)
     {
-        sys->fprint(sys->fildes(2), "cannot load bigint: %r\n");
+        sys->fprint(sys->fildes(2), "cannot load bigkey: %r\n");
         raise "fail:bad module";
     }
-    bigintmodule->init();
+    bigkey->init();
 }
 
 abs(a: int): int
@@ -688,20 +687,23 @@ Contacts.randomidinbucket(c: self ref Contacts, idx: int): Key
     ret := Key.generate();
     for (i := 0; i < BB; i++)
     {
-        ret.data[i] &= h.data[i];
-	if ((ret.data[i] ^ h.data[i]) > byte 0)
-	    break;
+        if (ret.data[i] > h.data[i])
+            ret.data[i] = h.data[i];
+        if (ret.data[i] < h.data[i])
+            break;
     }
     for (i = 0; i < BB; i++)
     {
-        ret.data[i] |= l.data[i];
-	if ((ret.data[i] ^ l.data[i]) > byte 0)
-	    break;
+        if (ret.data[i] < l.data[i])
+            ret.data[i] = l.data[i];
+        if (ret.data[i] > l.data[i])
+            break;
     }
     if (ret.data == h.data)
         return ret.dec();
     return ret;
 }
+
 Contacts.touch(c: self ref Contacts, idx: int)
 {
     c.buckets[idx].lastaccess = *daytime->local(daytime->now());
@@ -725,17 +727,17 @@ Contacts.findclosenodes(c: self ref Contacts, id: Key): array of Node
     buffer, newnodes: array of Node;
     while (len nodes < K && ablemove) 
     {
-	    if ((bucketIdx + i < len c.buckets) && (bucketIdx + i >= 0))
-	    {
-	        newnodes = c.buckets[bucketIdx + i].getnodes(K - len nodes);
-	        buffer := array[len nodes + len buffer] of Node;
-	        buffer[:] = nodes[:];
-	        buffer[len nodes:] = newnodes[:];
-	        nodes = buffer;
-	    }
-	    mod++; 
-	    sign *= -1;
-	    i += mod * sign;
+        if ((bucketIdx + i < len c.buckets) && (bucketIdx + i >= 0))
+        {
+            newnodes = c.buckets[bucketIdx + i].getnodes(K - len nodes);
+            buffer := array[len nodes + len buffer] of Node;
+            buffer[:] = nodes[:];
+            buffer[len nodes:] = newnodes[:];
+            nodes = buffer;
+        }
+        mod++; 
+        sign *= -1;
+        i += mod * sign;
             ablemove := (bucketIdx + abs(i) < len c.buckets) || (bucketIdx - abs(i) >= 0);
     }
     return nodes;
@@ -790,7 +792,10 @@ start(localaddr: string, bootstrap: ref Node, id: Key): ref Local
     node := Node(id, localaddr, 0);
     contacts := ref Contacts(array [1] of ref Bucket, id);
     # construct the first bucket
-    contacts.buckets[0] = ref Bucket(array [0] of Node, Key(array[BB] of { * => byte 0 }), Key(array[BB] of { * => byte 1 }), *daytime->local(daytime->now()));
+    contacts.buckets[0] = ref Bucket(array [0] of Node,
+        Key(array[BB] of { * => byte 0 }),
+        Key(array[BB] of { * => byte 16rFF }),
+        *daytime->local(daytime->now()));
 
     store: list of (Key, array of byte, Daytime->Tm);
     server := ref Local(node, contacts, store, 0, 0);
