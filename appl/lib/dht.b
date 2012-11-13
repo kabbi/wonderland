@@ -680,26 +680,27 @@ Contacts.findbucket(c: self ref Contacts, id: Key): int
 }
 Contacts.randomidinbucket(c: self ref Contacts, idx: int): Key
 {
-    b := c.buckets[idx];
-    h := b.maxrange;
-    l := b.minrange;
+    h := c.buckets[idx].maxrange.data;
+    l := c.buckets[idx].minrange.data;
+    (ltmax, gtmin) := (0, 0);
+    top, bot, cur: byte;
 
-    ret := Key.generate();
+    ret := Key(array[BB] of byte);
     for (i := 0; i < BB; i++)
     {
-        if (ret.data[i] > h.data[i])
-            ret.data[i] = h.data[i];
-        if (ret.data[i] < h.data[i])
-            break;
+	(top, bot) = (byte 16rFF, byte 0);
+	if (!gtmin)
+	    bot = l[i];
+	if (!ltmax)
+	    top = h[i];
+        cur = byte ((abs (random->randomint(random->NotQuiteRandom)) % (int top - int bot + 1)) + int bot);
+	ret.data[i] = cur;
+        if (cur < top)
+            ltmax = 1;
+        if (cur > bot)
+            gtmin = 1;
     }
-    for (i = 0; i < BB; i++)
-    {
-        if (ret.data[i] < l.data[i])
-            ret.data[i] = l.data[i];
-        if (ret.data[i] > l.data[i])
-            break;
-    }
-    if (ret.data == h.data)
+    if (!ltmax)
         return ret.dec();
     return ret;
 }
