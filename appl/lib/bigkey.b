@@ -110,8 +110,8 @@ Key.subtract(s: self Key, b: Key): Key
     t: byte;
     for (i := len a.data - 1; i >= 0; i--)
     {
-        t = byte (a.data[i] < (b.data[i] + carry));
-        a.data[i] -= b.data[i] + carry;
+        t = byte (int a.data[i] < (int b.data[i] + int carry));
+        a.data[i] -= (b.data[i] + carry);
         carry = t;
     }
     #TODO Throw exception in case we are out of bounds (carry != 0)
