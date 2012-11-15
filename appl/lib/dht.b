@@ -599,8 +599,8 @@ Bucket.getnodes(b: self ref Bucket, size: int): array of Node
 }
 Bucket.findnode(b: self ref Bucket, id: Key): int
 {
-    for (i := 0; i<len b.nodes; i++)
-        if (b.nodes[i].id.data == id.data)
+    for (i := 0; i < len b.nodes; i++)
+        if (b.nodes[i].id.eq(id))
             return i;
     # not found
     return -1;
@@ -619,6 +619,9 @@ Bucket.print(b: self ref Bucket, tabs: int)
 
 Contacts.addcontact(c: self ref Contacts, n: ref Node)
 {
+    if (n.id.eq(c.localid))
+        return;
+
     bucketInd := c.findbucket(n.id);
     #TODO: Update lastaccess time?
     case c.buckets[bucketInd].addnode(*n)
@@ -626,12 +629,12 @@ Contacts.addcontact(c: self ref Contacts, n: ref Node)
         * =>
             #Success, nothing to do here.
         EBucketFull => 
-        #TODO: Substitute to section 2.2 (see l.152 of p2plib)
-        if (c.buckets[bucketInd].isinrange(c.localid))
-        {
-            c.split(bucketInd);
-            c.addcontact(n);
-        }
+            #TODO: Substitute to section 2.2 (see l.152 of p2plib)
+            if (c.buckets[bucketInd].isinrange(c.localid))
+            {
+                c.split(bucketInd);
+                c.addcontact(n);
+            }
         EAlreadyPresent =>
             c.removecontact(n.id);
             c.addcontact(n);
@@ -663,12 +666,14 @@ Contacts.split(c: self ref Contacts, idx: int)
 Contacts.removecontact(c: self ref Contacts, id: Key)
 {
     trgbucket := c.buckets[c.findbucket(id)];
-    # construct and find dummy Node
     idx := trgbucket.findnode(id);
+    if (idx == -1)
+        return;
     nodes := array [len trgbucket.nodes - 1] of Node;
     nodes[:] = trgbucket.nodes[:idx];
     nodes[idx:] = trgbucket.nodes[idx+1:];
     trgbucket.nodes = nodes;
+    c.buckets[c.findbucket(id)] = trgbucket;
 }
 Contacts.findbucket(c: self ref Contacts, id: Key): int
 {
@@ -688,13 +693,13 @@ Contacts.randomidinbucket(c: self ref Contacts, idx: int): Key
     ret := Key(array[BB] of byte);
     for (i := 0; i < BB; i++)
     {
-	(top, bot) = (byte 16rFF, byte 0);
-	if (!gtmin)
-	    bot = l[i];
-	if (!ltmax)
-	    top = h[i];
-        cur = byte ((abs (random->randomint(random->NotQuiteRandom)) % (int top - int bot + 1)) + int bot);
-	ret.data[i] = cur;
+        (top, bot) = (byte 16rFF, byte 0);
+        if (!gtmin)
+           bot = l[i];
+        if (!ltmax)
+           top = h[i];
+        cur = byte ((abs(random->randomint(random->NotQuiteRandom)) % (int top - int bot + 1)) + int bot);
+        ret.data[i] = cur;
         if (cur < top)
             ltmax = 1;
         if (cur > bot)

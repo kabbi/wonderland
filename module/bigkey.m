@@ -13,6 +13,7 @@ Bigkey: module
 
         lt: fn(nil: self Key, other: Key): int;
         gt: fn(nil: self Key, other: Key): int;
+        eq: fn(nil: self Key, other: Key): int;
         inc: fn(nil: self Key): Key;
         dec: fn(nil: self Key): Key;
         subtract: fn(nil: self Key, b: Key): Key;

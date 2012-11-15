@@ -60,6 +60,10 @@ Key.gt(k: self Key, o: Key): int
             return k.data[i] > o.data[i];
     return 0;
 }
+Key.eq(k: self Key, o: Key): int
+{
+    return !k.lt(o) && !k.gt(o);
+}
 Key.inc(b: self Key): Key
 {
     k := Key(array[BB] of { * => byte 0 });

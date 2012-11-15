@@ -82,10 +82,30 @@ init(nil: ref Draw->Context, nil: list of string)
 	local.contacts.print(0);
 	sys->print("\n");
 
+	sys->print("testing node deletion\n");
+	keys := array [100] of Key;
+	for (i := 0; i < len keys; i++)
+	{
+		keys[i] = Key.generate();
+		node := ref Node(keys[i], "addrpo" + string i, 0);
+		local.contacts.addcontact(node);
+	}
+	for (i = 0; i < len keys; i++)
+		local.contacts.removecontact(keys[i]);
+	nodecount := 0;
+	for (i = 0; i < len local.contacts.buckets; i++)
+		nodecount += len local.contacts.buckets[i].nodes;
+	if (nodecount != 0)
+	{
+		sys->print("there are %d nodes\n", nodecount);
+		raise "fail:test failed";
+	}
+	sys->print("\n");
+
 	sys->print("trying to get K closest to the random node\n");
 	randkey := Key.generate();
 	# to have something in contacts
-	for (i := 0; i < 200000; i++)
+	for (i = 0; i < 2000; i++)
 	{
 		node := ref Node(Key.generate(), "addrfx" + string i, 0);
 		local.contacts.addcontact(node);
@@ -103,7 +123,7 @@ init(nil: ref Draw->Context, nil: list of string)
 	}
 	sys->print("\n");
 
-	sys->print("checking randomidinbucketrange on 100000 random ids\n");
+	sys->print("checking randomidinbucketrange on 1000 random ids\n");
 	minrange := Key.generate();
 	maxrange := Key.generate();
 	if (maxrange.lt(minrange))
@@ -115,7 +135,7 @@ init(nil: ref Draw->Context, nil: list of string)
 	bucket := ref Bucket(array [0] of Node, minrange, maxrange,
         local.contacts.buckets[0].lastaccess);
 	local.contacts.buckets = array [1] of {bucket};
-	for (i = 0; i < 100000; i++)
+	for (i = 0; i < 1000; i++)
 	{
 		key := local.contacts.randomidinbucket(0);
 		if (!bucket.isinrange(key))
@@ -132,13 +152,13 @@ init(nil: ref Draw->Context, nil: list of string)
 	local = dht->start("udp!127.0.0.1!1234", ref Node(Key.generate(),
 		"nil", 0), Key.generate());
 
-	sys->print("adding 100000 random keys\n");
-	for (i = 0; i < 100000; i++)
+	sys->print("adding 10000 random keys\n");
+	for (i = 0; i < 10000; i++)
 	{
 		node := ref Node(Key.generate(), "addrx" + string i, 0);
 		local.contacts.addcontact(node);
 	}
-	nodecount := 0;
+	nodecount = 0;
 	for (i = 0; i < len local.contacts.buckets; i++)
 		nodecount += len local.contacts.buckets[i].nodes;
 	sys->print("surprisingly, finished ok! added %d keys\n", nodecount);
