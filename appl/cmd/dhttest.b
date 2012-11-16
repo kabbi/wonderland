@@ -1,8 +1,9 @@
-implement Dhttest;
+implement dhttest;
 include "sys.m";
 	sys: Sys;
 include "draw.m";
 include "daytime.m";
+    daytime: Daytime;
 include "bigkey.m";
 	bigkey: Bigkey;
 	Key: import bigkey;
@@ -10,7 +11,7 @@ include "dht.m";
 	dht: Dht;
 	Node,Bucket,Contacts,Local,K,BB: import dht;
 
-Dhttest: module {
+dhttest: module {
 	init: fn(nil: ref Draw->Context, argv: list of string);
 };
 
@@ -20,10 +21,256 @@ badmodule(p: string)
 	raise "fail:bad module";
 }
 
+local: ref Local;
+
+dist(k1, k2: Key): Key
+{
+    r := Key.generate();
+    r.data[:] = k1.data[:];
+    for (i := 0; i < BB; i++)
+        r.data[i] ^= k2.data[i];
+    return r;
+}
+
+initlocal(verbose: int): ref Local
+{
+	l := dht->start("udp!127.0.0.1!1234", ref Node(Key.generate(),
+		"nil", 0), Key.generate());
+	if (l == nil)
+	{
+		sys->print("failed to start server!\n%r\n");
+        raise "fail:failed to start server";
+	}
+    if (verbose)
+    	sys->print("started Dht, local id %s\n", l.node.id.text());
+    return l;
+}
+
+clean(verbose: int): int
+{
+    if (verbose)
+        sys->print("Cleaning local...\n");
+    contacts := ref Contacts(array [1] of ref Bucket, Key.generate());
+    contacts.buckets[0] = ref Bucket(array [0] of Node,
+        Key(array[BB] of { * => byte 0 }),
+        Key(array[BB] of { * => byte 16rFF }),
+        *daytime->local(daytime->now()));
+        local.contacts = contacts;
+    if (verbose)
+        sys->print("OK. Local cleaned\n");
+    return 0;
+}
+
+print()
+{
+    local.contacts.print(0);
+    sys->print("\n");
+}
+
+addnode(key: Key, verbose: int)
+{
+    local.contacts.addcontact(ref Node(key, "explicit", 0));
+    if (verbose)
+        sys->print("Key successfully added.\n");
+}
+
+addrandom(verbose: int): Key
+{
+    key := Key.generate();
+    local.contacts.addcontact(ref Node(key, "random", 0));
+    if (verbose)
+        sys->print("Added key with id:%s\n", key.text());
+    return key;
+}
+
+removekey(key: Key, verbose: int)
+{
+    if (verbose)
+        sys->print("Deleting node\n");
+    if (local.contacts.buckets[local.contacts.findbucket(key)].findnode(key) == -1)
+    {
+        if (verbose)
+            sys->print("Not found!\n");
+        return;
+    }
+    local.contacts.removecontact(key);
+    if (verbose)
+        sys->print("Successfully deleted\n");
+}
+
+countnodes(verbose: int): int
+{
+    count := 0;
+    for (i := 0; i < len local.contacts.buckets; i++)
+        count += len local.contacts.buckets[i].nodes;
+    if (verbose)
+        sys->print("Node count: %d\n", count);
+    return count;
+}
+
+addrandoms(num: int, verbose: int): array of Key
+{
+    keys := array[num] of Key;
+    if (verbose)
+        sys->print("Adding random nodes\n");
+    for (i := 0; i < num; ++i)
+        keys[i] = addrandom(verbose);
+    if (verbose)
+        sys->print("Nodes added: %d\n", num);
+    return keys;
+}
+
+closest(key: Key, verbose: int): array of Node
+{
+    if (verbose)
+        sys->print("looking for key: %s\n", key.text());
+	close := local.contacts.findclosenodes(key);
+	for (i := 0; i < len close && verbose; i++)
+	{
+		sys->print("Distance from %s = ", (ref close[i]).text());
+		sys->print("%s\n", dist(close[i].id, key).text());
+	}
+    return close;
+}
+
+# Tests
+
+closesttest(count: int)
+{
+    local.destroy();
+    local = initlocal(0);
+    sys->print("trying to get K closest to the random node\n");
+    addrandoms(count, 0);
+    randomid := Key.generate();
+    close := closest(randomid, 0);
+    b := Bucket(close, Key.generate(), Key.generate(), 
+                       *daytime->local(daytime->now()));
+    for (k := 0; k < len close; ++k)
+    {
+        d := dist(randomid, close[k].id);
+        for (i := 0; i < len local.contacts.buckets; ++i)
+            for (j := 0; j < len local.contacts.buckets[i].nodes; ++j)
+            {
+                curnode := local.contacts.buckets[i].nodes[j];
+                if (dist(curnode.id, randomid).lt(d) 
+                      && 
+                    ((ref b).findnode(curnode.id) == -1))
+                {
+                    sys->print("Closest test failed!\n");
+                    sys->print("getclosenodes returned:\n");
+                    (ref b).print(0);
+                    sys->print("... but %s is nearer to\n", 
+                                        curnode.id.text());
+                    sys->print("        %s (randomly picked node) then\n",
+                                        randomid.text());
+                    sys->print("        %s\n",
+                                        close[k].id.text());
+                    sys->print("d(conflict, random) = %s\n", dist(curnode.id, randomid).text());
+                    sys->print("d(closest, random) =  %s\n", d.text());
+                    raise "test fail:closest";
+                }
+            }
+    }
+    sys->print("OK! Closest test passed!\n");
+	sys->print("\n");
+}
+
+randomidinrangetest(count: int) 
+{
+    local.destroy();
+    local = initlocal(0);
+	sys->print("checking randomidinbucketrange on %d random ids\n", count);
+    b := Bucket(array[0] of Node, Key.generate(), Key.generate(), 
+                                  *daytime->local(daytime->now()));
+    sys->print("bucket: \n");
+    (ref b).print(0);
+    if (b.maxrange.lt(b.minrange))
+    {
+        tm := b.maxrange;
+        b.maxrange = b.minrange;
+        b.minrange = tm;
+    }
+    local.contacts.buckets = array[1] of { ref b };
+    for (i := 0; i < count; i++)
+	{
+		key := local.contacts.randomidinbucket(0);
+		if (!(ref b).isinrange(key))
+		{
+			sys->print("noooo, it failed on key %s :(\n", key.text());
+			raise "test fail:randomidinrange";
+		}
+	}
+    sys->print("OK! Randomidinrange test passed!\n");
+	sys->print("\n");
+}
+
+sequentialtest()
+{
+    local.destroy();
+    local = initlocal(0);
+    sys->print("Adding 160*K sequential keys\n");
+	for (i := 0; i < 160; i++)
+	{
+		for (j := 0; j <= K; j++)
+		{
+			idx := local.contacts.findbucket(local.node.id);
+			node := ref Node(local.contacts.randomidinbucket(idx),
+				"sequential" + string i, 0);
+			local.contacts.addcontact(node);
+		}
+	}
+	sys->print("OK! Sequential-test passed! Added %d keys\n", countnodes(0));
+	sys->print("Number of buckets: %d\n", len local.contacts.buckets);
+	sys->print("\n");
+}
+
+filltest()
+{
+    local.destroy();
+    local = initlocal(0);
+    sys->print("Trying to fill the whole routing table\n");
+	for (i := 0; i < len local.contacts.buckets; i++)
+	{
+		for (j := 0; j <= K; j++)
+		{
+			node := ref Node(local.contacts.randomidinbucket(i), "fill test", 0);
+			local.contacts.addcontact(node);
+		}
+	}
+	sys->print("OK! Total count of contacts: %d\n", countnodes(0));
+	sys->print("Number of buckets: %d\n", len local.contacts.buckets);
+	sys->print("\n");
+}
+
+starttest()
+{
+    local = initlocal(0);
+    key1 := addrandom(1);
+    key2 := addrandom(1);
+    addnode(key1, 1);
+    addnode(key2, 1);
+    print();
+    clean(0);
+    keys := addrandoms(100, 1);
+    countnodes(1);
+    for (i := 0; i < len keys; i++)
+        removekey(keys[i], 0);
+    if (countnodes(1) != 0)
+    {
+        sys->print("Deletion test failed!\n");
+        raise "test fail:deletion";
+    }
+    #while (1)
+      filltest();
+}
+
 init(nil: ref Draw->Context, nil: list of string)
 {
 	# loading modules
 	sys = load Sys Sys->PATH;
+	daytime = load Daytime Daytime->PATH;
+	if (daytime == nil)
+		badmodule(Daytime->PATH);
 	
 	dht = load Dht Dht->PATH;
 	if (dht == nil)
@@ -34,174 +281,7 @@ init(nil: ref Draw->Context, nil: list of string)
 		badmodule(Bigkey->PATH);
 	bigkey->init();
 
-	local := dht->start("udp!127.0.0.1!1234", ref Node(Key.generate(),
-		"nil", 0), Key.generate());
-	if (local == nil)
-	{
-		sys->print("failed to start server!\n%r\n");
-		return;
-	}
-	sys->print("started Dht, local id %s\n", local.node.id.text());
-
-	sys->print("generating some random keys\n");
-	key1 := Key.generate();
-	key2 := Key.generate();
-	sys->print("key1: %s\n", key1.text());
-	sys->print("key2: %s\n", key2.text());
-	sys->print("key1 lt key2 = %d\n", key1.lt(key2));
-	sys->print("key2 lt key1 = %d\n", key2.lt(key1));
-	sys->print("key1 gt key2 = %d\n", key1.gt(key2));
-	sys->print("key2 gt key1 = %d\n", key2.gt(key1));
-	sys->print("\n");
-
-	sys->print("generating some random nodes\n");
-	node1 := ref Node(key1, "addr1", 0);
-	node2 := ref Node(key2, "addr2", 0);
-	sys->print("node1: %s\n", node1.text());
-	sys->print("node2: %s\n", node2.text());
-	sys->print("\n");
-
-	sys->print("adding them to the contacts\n");
-
-	local.contacts.addcontact(node1);
-	local.contacts.addcontact(node2);
-	local.contacts.addcontact(node1);
-	local.contacts.addcontact(node2);
-
-	sys->print("contacts after adding 2 nodes:\n");
-	local.contacts.print(0);
-	sys->print("\n");
-
-	local.contacts.removecontact(node1.id);
-	local.contacts.removecontact(node2.id);
-	# currently fails if deletes non-existant node
-	#local.contacts.removecontact(node2.id);
-	#local.contacts.removecontact(node1.id);
-
-	sys->print("contacts after removing 2 nodes:\n");
-	local.contacts.print(0);
-	sys->print("\n");
-
-	sys->print("testing node deletion\n");
-	keys := array [100] of Key;
-	for (i := 0; i < len keys; i++)
-	{
-		keys[i] = Key.generate();
-		node := ref Node(keys[i], "addrpo" + string i, 0);
-		local.contacts.addcontact(node);
-	}
-	for (i = 0; i < len keys; i++)
-		local.contacts.removecontact(keys[i]);
-	nodecount := 0;
-	for (i = 0; i < len local.contacts.buckets; i++)
-		nodecount += len local.contacts.buckets[i].nodes;
-	if (nodecount != 0)
-	{
-		sys->print("there are %d nodes\n", nodecount);
-		raise "fail:test failed";
-	}
-	sys->print("\n");
-
-	sys->print("trying to get K closest to the random node\n");
-	randkey := Key.generate();
-	# to have something in contacts
-	for (i = 0; i < 2000; i++)
-	{
-		node := ref Node(Key.generate(), "addrfx" + string i, 0);
-		local.contacts.addcontact(node);
-	}
-	#local.contacts.print(0);
-	sys->print("looking for key: %s\n", randkey.text());
-	closest := local.contacts.findclosenodes(randkey);
-	for (i = 0; i < len closest; i++)
-	{
-		sys->print("%s - dist ", (ref closest[i]).text());
-		dist := closest[i].id;
-		for (j := 0; j < BB; j++)
-			dist.data[j] ^= randkey.data[j];
-		sys->print("%s\n", dist.text());
-	}
-	sys->print("\n");
-
-	sys->print("checking randomidinbucketrange on 1000 random ids\n");
-	minrange := Key.generate();
-	maxrange := Key.generate();
-	if (maxrange.lt(minrange))
-	{
-		temp := maxrange;
-		maxrange = minrange;
-		minrange = temp;
-	}
-	bucket := ref Bucket(array [0] of Node, minrange, maxrange,
-        local.contacts.buckets[0].lastaccess);
-	local.contacts.buckets = array [1] of {bucket};
-	for (i = 0; i < 1000; i++)
-	{
-		key := local.contacts.randomidinbucket(0);
-		if (!bucket.isinrange(key))
-		{
-			sys->print("noooo, it failed on key %s :(\n", key.text());
-			raise "fail:test failed";
-		}
-	}
-	sys->print("ok!\n");
-	sys->print("\n");
-
-	# recreate everything...
-	local.destroy();
-	local = dht->start("udp!127.0.0.1!1234", ref Node(Key.generate(),
-		"nil", 0), Key.generate());
-
-	sys->print("adding 10000 random keys\n");
-	for (i = 0; i < 10000; i++)
-	{
-		node := ref Node(Key.generate(), "addrx" + string i, 0);
-		local.contacts.addcontact(node);
-	}
-	nodecount = 0;
-	for (i = 0; i < len local.contacts.buckets; i++)
-		nodecount += len local.contacts.buckets[i].nodes;
-	sys->print("surprisingly, finished ok! added %d keys\n", nodecount);
-	sys->print("\n");
-
-	# recreate everything...
-	local.destroy();
-	local = dht->start("udp!127.0.0.1!1234", ref Node(Key.generate(),
-		"nil", 0), Key.generate());
-
-	sys->print("adding 160*K sequential keys\n");
-	for (i = 0; i < 160; i++)
-	{
-		for (j := 0; j < K; j++)
-		{
-			idx := local.contacts.findbucket(local.node.id);
-			node := ref Node(local.contacts.randomidinbucket(idx),
-				"addrn" + string i, 0);
-			local.contacts.addcontact(node);
-		}
-	}
-	nodecount = 0;
-	for (i = 0; i < len local.contacts.buckets; i++)
-		nodecount += len local.contacts.buckets[i].nodes;
-	sys->print("again surprisingly, finished ok! added %d keys\n", nodecount);
-	sys->print("number of buckets: %d\n", len local.contacts.buckets);
-	sys->print("\n");
-
-	sys->print("trying to fill the whole routing table\n");
-	for (i = 0; i < len local.contacts.buckets; i++)
-	{
-		for (j := 0; j < K; j++)
-		{
-			node := ref Node(local.contacts.randomidinbucket(i), "addrq", 0);
-			local.contacts.addcontact(node);
-		}
-	}
-	nodecount = 0;
-	for (i = 0; i < len local.contacts.buckets; i++)
-		nodecount += len local.contacts.buckets[i].nodes;
-	sys->print("total count of contacts: %d\n", nodecount);
-	sys->print("\n");
-
+    starttest();
 	sys->print("cleaning up\n");
 	local.destroy();
 }
