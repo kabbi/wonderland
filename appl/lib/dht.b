@@ -25,7 +25,7 @@ OFFSET: con BIT64SZ;
 KEY: con BB+LEN;
 NODE: con KEY+LEN+BIT32SZ;
 
-H: con BIT32SZ+BIT8SZ+BIT32SZ+KEY+KEY;  # minimum header length: size[4] type tag[4] sender[20] target[20]
+H: con BIT32SZ+BIT8SZ+KEY+KEY+KEY;  # minimum header length: size[4] type uid[20] sender[20] target[20]
 
 # minimum packet sizes
 hdrlen := array[Tmax] of
@@ -43,45 +43,33 @@ TFindNode =>    H+KEY,      # no data
 RFindNode =>    H+LEN,      # nodes[4+]
 };
 
+badmodule(p: string)
+{
+    sys->fprint(sys->fildes(2), "cannot load %s: %r\n", p);
+    raise "fail: init: bad module";
+}
+
 init()
 {
     sys = load Sys Sys->PATH;
     keyring = load Keyring Keyring->PATH;
     if (keyring == nil)
-    {
-        sys->fprint(sys->fildes(2), "cannot load keyring: %r\n");
-        raise "fail:bad module";
-    }
+        badmodule(Keyring->PATH);
     base16 = load Encoding Encoding->BASE16PATH;
     if (base16 == nil)
-    {
-        sys->fprint(sys->fildes(2), "cannot load base16: %r\n");
-        raise "fail:bad module";
-    }
+        badmodule(Encoding->BASE16PATH);
     random = load Random Random->PATH;
     if (random == nil)
-    {
-        sys->fprint(sys->fildes(2), "cannot load random: %r\n");
-        raise "fail:bad module";
-    }
+        badmodule(Random->PATH);
     daytime = load Daytime Daytime->PATH;
     if (daytime == nil)
-    {
-        sys->fprint(sys->fildes(2), "cannot load daytime: %r\n");
-        raise "fail:bad module";
-    }
+        badmodule(Daytime->PATH);
     math = load Math Math->PATH;
     if (math == nil)
-    {
-        sys->fprint(sys->fildes(2), "cannot load math: %r\n");
-        raise "fail:bad module";
-    }
+        badmodule(Math->PATH);
     bigkey = load Bigkey Bigkey->PATH;
     if (bigkey == nil)
-    {
-        sys->fprint(sys->fildes(2), "cannot load bigkey: %r\n");
-        raise "fail:bad module";
-    }
+        badmodule(Bigkey->PATH);
     bigkey->init();
 }
 
@@ -123,7 +111,7 @@ parray(a: array of byte, o: int, sa: array of byte): int
 
 pstring(a: array of byte, o: int, s: string): int
 {
-    sa := array of byte s;  # could do conversion ourselves
+    sa := array of byte s;
     return parray(a, o, sa);
 }
 
@@ -151,64 +139,69 @@ p64(a: array of byte, o: int, b: big): int
     return o+BIT64SZ;
 }
 
-g32(f: array of byte, i: int): int
+g32(a: array of byte, o: int): int
 {
-    return (((((int f[i+3] << 8) | int f[i+2]) << 8) | int f[i+1]) << 8) | int f[i];
+    if (o + BIT32SZ >= len a)
+        raise "fail: g32: malformed packet";
+    return (((((int a[o+3] << 8) | int a[o+2]) << 8) | int a[o+1]) << 8) | int a[o];
 }
 
-g64(f: array of byte, i: int): big
+g64(a: array of byte, o: int): big
 {
-    b0 := (((((int f[i+3] << 8) | int f[i+2]) << 8) | int f[i+1]) << 8) | int f[i];
-    b1 := (((((int f[i+7] << 8) | int f[i+6]) << 8) | int f[i+5]) << 8) | int f[i+4];
+    if (o + BIT64SZ >= len a)
+        raise "fail: g64: malformed packet";
+    b0 := (((((int a[o+3] << 8) | int a[o+2]) << 8) | int a[o+1]) << 8) | int a[o];
+    b1 := (((((int a[o+7] << 8) | int a[o+6]) << 8) | int a[o+5]) << 8) | int a[o+4];
     return (big b1 << 32) | (big b0 & 16rFFFFFFFF);
 }
 
 gstring(a: array of byte, o: int): (string, int)
 {
     (str, l) := garray(a, o);
-    if (str == nil)
-        return (nil, -1);
     return (string str, l);
 }
 
 garray(a: array of byte, o: int): (array of byte, int)
 {
     if(o < 0 || o+LEN > len a)
-        return (nil, -1);
-    l := (int a[o+1] << 8) | int a[o];
+        raise "fail: garray: malformed packet";
+    l := g32(a, o);
     o += LEN;
     e := o+l;
     if(e > len a)
-        return (nil, -1);
+        raise "fail: garray: malformed packet";
     return (a[o:e], e);
 }
 
-gkey(a: array of byte, o: int): (ref Key, int)
+gkey(a: array of byte, o: int): (Key, int)
 {
     (data, l) := garray(a, o);
-    if (data == nil)
-        return (nil, -1);
     if (len data != BB)
-        return (nil, -1);
-    return (ref Key(data), l);
+        raise "fail: gkey: malformed packet";
+    return (Key(data), l);
 }
 
-gnode(a: array of byte, o: int): (ref Node, int)
+gnode(a: array of byte, o: int): (Node, int)
 {
     (key, o1) := gkey(a, o);
-    if (key == nil)
-        return (nil, -1);
     (addr, o2) := gstring(a, o1);
-    if (addr == nil)
-        return (nil, -1);
     rtt := g32(a, o2);
-    return (ref Node(*key, addr, rtt), o2+BIT32SZ);
+    return (Node(key, addr, rtt), o2+BIT32SZ);
 }
 
 gnodes(a: array of byte, o: int): (array of Node, int)
 {
-    # TODO: implement
-    return (nil, -1);
+    l := g32(a, o);
+    if (l < 0)
+        raise "fail: gnodes: malformed packet";
+    nodes := array [l] of Node;
+    for (i := 0; i < l; i++)
+    {
+        node: Node;
+        (node, o) = gnode(a, o);
+        nodes[i] = node;
+    }
+    return (nodes, -1);
 }
 
 
@@ -234,27 +227,25 @@ Tmsg.packedsize(t: self ref Tmsg): int
     ml := hdrlen[mtype];
     pick m := t {
     Ping =>
-        # no data
+        # no dynamic data
     Store =>
         ml += len m.data;
     FindNode or FindValue =>
-        # no data
+        # no dynamic data
     }
     return ml;
 }
 
 Tmsg.pack(t: self ref Tmsg): array of byte
 {
-    if(t == nil)
-        return nil;
     ds := t.packedsize();
     if(ds <= 0)
-        return nil;
+        raise "fail: Tmsg.pack: bad packet size";
     d := array [ds] of byte;
     o := 0; # offset
     o = p32(d, o, ds);
     d[o++] = byte ttag2type[tagof t];
-    o = p32(d, o, t.tag);
+    o = pkey(d, o, t.uid);
     o = pkey(d, o, t.senderID);
     o = pkey(d, o, t.targetID);
 
@@ -268,7 +259,7 @@ Tmsg.pack(t: self ref Tmsg): array of byte
     FindNode or FindValue =>
         o = parray(d, o, m.key.data);
     * =>
-        raise sys->sprint("assertion: Styx->Tmsg.pack: bad tag: %d", tagof t);
+        raise "fail: Tmsg.pack: bad message type";
     }
     return d;
 }
@@ -276,60 +267,48 @@ Tmsg.pack(t: self ref Tmsg): array of byte
 Tmsg.unpack(f: array of byte): (int, ref Tmsg)
 {
     if(len f < H)
-        return (0, nil);
+        raise "fail: Tmsg.unpack: buffer too small";
     size := g32(f, 0);
     if(len f != size){
         if(len f < size)
-            return (0, nil);    # need more data
+            raise "fail: Tmsg.unpack: buffer too small";
         f = f[0:size];  # trim to exact length
     }
     mtype := int f[4];
     if(mtype >= len hdrlen || (mtype&1) != 0 || size < hdrlen[mtype])
-        return (-1, nil);
+        raise "fail: Tmsg.unpack: unknown packet type";
 
-    tag := g32(f, 5);
-    (sender, o1) := garray(f, 9);
-    if (sender == nil)
-        return (-1, nil);
-    senderID := Key(sender);
-    (target, o2) := garray(f, o1);
-    if (target == nil)
-        return (-1, nil);
-    targetID := Key(target);
-    if (o2 != H)
-        return (-1, nil);
+    o := 5; # offset
+    uid, senderID, targetID: Key;
+    (uid, o) = gkey(f, o);
+    (senderID, o) = gkey(f, o);
+    (targetID, o) = gkey(f, o);
 
     # return out of each case body for a legal message;
     # break out of the case for an illegal one
 
     case mtype {
     * =>
-        sys->print("styx: Tmsg.unpack: bad type %d\n", mtype);
+        raise "fail: Tmsg.unpack: bad message type";
     TPing =>
-        return (H, ref Tmsg.Ping(tag, senderID, targetID));
+        return (H, ref Tmsg.Ping(uid, senderID, targetID));
     TStore =>
         key: Key;
-        (keyData, nil) := garray(f, H);
-        if (keyData == nil)
-            break;
-        key.data = keyData;
-        (data, o) := garray(f, H+BB);
+        (key, o) = gkey(f, o);
+        data: array of byte;
+        (data, o) = garray(f, o);
         ask := g32(f, o);
-        return (o, ref Tmsg.Store(tag, senderID, targetID, key, data, ask));
+        return (o, ref Tmsg.Store(uid, senderID, targetID, key, data, ask));
     TFindNode =>
         key: Key;
-        (keyData, o) := garray(f, H);
-        if (keyData == nil)
-            break;
-        return (o, ref Tmsg.FindNode(tag, senderID, targetID, key));
+        (key, o) = gkey(f, o);
+        return (o, ref Tmsg.FindNode(uid, senderID, targetID, key));
     TFindValue =>
         key: Key;
-        (keyData, o) := garray(f, H);
-        if (keyData == nil)
-            break;
-        return (o, ref Tmsg.FindValue(tag, senderID, targetID, key));
+        (key, o) = gkey(f, o);
+        return (o, ref Tmsg.FindValue(uid, senderID, targetID, key));
     }
-    return (-1, nil);       # illegal
+    raise "fail: Tmsg.unpack: malformed packet";
 }
 
 tmsgname := array[] of {
@@ -341,9 +320,7 @@ tagof Tmsg.FindValue => "FindValue"
 
 Tmsg.text(t: self ref Tmsg): string
 {
-    if(t == nil)
-        return "nil";
-    s := sys->sprint("Tmsg.%s(%ud,%s->%s,", tmsgname[tagof t], t.tag, t.senderID.text(), t.targetID.text());
+    s := sys->sprint("Tmsg.%s(%s,%s->%s,", tmsgname[tagof t], t.uid.text(), t.senderID.text(), t.targetID.text());
     pick m:= t {
     * =>
         return s + ",ILLEGAL)";
@@ -359,13 +336,9 @@ Tmsg.text(t: self ref Tmsg): string
 
 Tmsg.read(fd: ref Sys->FD, msglim: int): ref Tmsg
 {
-    (msg, err) := readmsg(fd, msglim);
-    if(err != nil || msg == nil)
-        return nil;
-    (nil, m) := Tmsg.unpack(msg);
-    if(m == nil)
-        nil;
-    return m;
+    msg := readmsg(fd, msglim);
+    (nil, tmsg) := Tmsg.unpack(msg); 
+    return tmsg;
 }
 
 # handling RMsgs
@@ -390,7 +363,7 @@ Rmsg.packedsize(r: self ref Rmsg): int
     ml := hdrlen[mtype];
     pick m := r {
     Ping =>
-        # no data
+        # no dynamic data
     Store =>
         ml += BIT32SZ;
     FindNode =>
@@ -403,16 +376,14 @@ Rmsg.packedsize(r: self ref Rmsg): int
 
 Rmsg.pack(r: self ref Rmsg): array of byte
 {
-    if(r == nil)
-        return nil;
     ds := r.packedsize();
     if(ds <= 0)
-        return nil;
+        raise "fail: Rmsg.pack: bad packet size";
     d := array [ds] of byte;
     o := 0; # offset
     o = p32(d, o, ds);
     d[o++] = byte ttag2type[tagof r];
-    o = p32(d, o, r.tag);
+    o = pkey(d, o, r.uid);
     o = pkey(d, o, r.senderID);
     o = pkey(d, o, r.targetID);
 
@@ -428,7 +399,7 @@ Rmsg.pack(r: self ref Rmsg): array of byte
         o = pnodes(d, o, m.nodes);
         o = parray(d, o, m.value);
     * =>
-        raise sys->sprint("assertion: Styx->Rmsg.pack: bad tag: %d", tagof r);
+        raise "fail: Rmsg.pack: bad message type";
     }
     return d;
 }
@@ -436,52 +407,49 @@ Rmsg.pack(r: self ref Rmsg): array of byte
 Rmsg.unpack(f: array of byte): (int, ref Rmsg)
 {
     if(len f < H)
-        return (0, nil);
+        raise "fail: Rmsg.unpack: buffer too small";
     size := g32(f, 0);
     if(len f != size){
         if(len f < size)
-            return (0, nil);    # need more data
+            raise "fail: Rmsg.unpack: buffer too small";
         f = f[0:size];  # trim to exact length
     }
     mtype := int f[4];
-    if(mtype >= len hdrlen || (mtype&1) != 0 || size < hdrlen[mtype])
-        return (-1, nil);
+    if(mtype >= len hdrlen || (mtype&1) != 1 || size < hdrlen[mtype])
+        raise "fail: Rmsg.unpack: unknown packet type";
 
-    tag := g32(f, 5);
-    (sender, o1) := garray(f, 9);
-    if (sender == nil)
-        return (-1, nil);
-    senderID := Key(sender);
-    (target, o2) := garray(f, o1);
-    if (target == nil)
-        return (-1, nil);
-    targetID := Key(target);
-    if (o2 != H)
-        return (-1, nil);
+    o := 5; # offset
+    uid, senderID, targetID: Key;
+    (uid, o) = gkey(f, o);
+    (senderID, o) = gkey(f, o);
+    (targetID, o) = gkey(f, o);
 
     # return out of each case body for a legal message;
     # break out of the case for an illegal one
 
     case mtype {
     * =>
-        sys->print("styx: Rmsg.unpack: bad type %d\n", mtype);
+        raise "fail: Rmsg.unpack: bad message type";
     TPing =>
-        return (H, ref Rmsg.Ping(tag, senderID, targetID));
+        return (H, ref Rmsg.Ping(uid, senderID, targetID));
     TStore =>
-        result := g32(f, H);
-        return (H+BIT32SZ, ref Rmsg.Store(tag, senderID, targetID, result));
+        result := g32(f, o);
+        return (o+BIT32SZ, ref Rmsg.Store(uid, senderID, targetID, result));
     TFindNode =>
-        # implement reading!
-        nodes := array [1] of Node;
-        return (0, ref Rmsg.FindNode(tag, senderID, targetID, nodes));
+        nodes: array of Node;
+        (nodes, o) = gnodes(f, o);
+        return (o, ref Rmsg.FindNode(uid, senderID, targetID, nodes));
     TFindValue =>
         # implement reading!
-        result := g32(f, H);
-        nodes := array [1] of Node;
-        value := array [1] of byte;
-        return (0, ref Rmsg.FindValue(tag, senderID, targetID, result, nodes, value));
+        result := g32(f, o);
+        o += BIT32SZ;
+        nodes: array of Node;
+        (nodes, o) = gnodes(f, o);
+        value: array of byte;
+        (value, o) = garray(f, o);
+        return (o, ref Rmsg.FindValue(uid, senderID, targetID, result, nodes, value));
     }
-    return (-1, nil);       # illegal
+    raise "fail: Rmsg.unpack: malformed packet";
 }
 
 Rmsgname := array[] of {
@@ -493,9 +461,7 @@ tagof Rmsg.FindValue => "FindValue"
 
 Rmsg.text(r: self ref Rmsg): string
 {
-    if(r == nil)
-        return "nil";
-    s := sys->sprint("Rmsg.%s(%ud,%s->%s,", Rmsgname[tagof r], r.tag, r.senderID.text(), r.targetID.text());
+    s := sys->sprint("Rmsg.%s(%s,%s->%s,", Rmsgname[tagof r], r.uid.text(), r.senderID.text(), r.targetID.text());
     pick m:= r {
     * =>
         return s + ",ILLEGAL)";
@@ -527,44 +493,41 @@ Rmsg.text(r: self ref Rmsg): string
 
 Rmsg.read(fd: ref Sys->FD, msglim: int): ref Rmsg
 {
-    (msg, err) := readmsg(fd, msglim);
-    if(err != nil || msg == nil)
-        return nil;
-    (nil, m) := Rmsg.unpack(msg);
-    if(m == nil)
-        nil;
-    return m;
+    msg := readmsg(fd, msglim);
+    (nil, rmsg) := Rmsg.unpack(msg); 
+    return rmsg;
 }
 
-readmsg(fd: ref Sys->FD, msglim: int): (array of byte, string)
+readmsg(fd: ref Sys->FD, msglim: int): array of byte
 {
     if(msglim <= 0)
         msglim = MAXRPC;
-    sbuf := array[BIT32SZ] of byte;
+    sbuf := array [BIT32SZ] of byte;
     if((n := sys->readn(fd, sbuf, BIT32SZ)) != BIT32SZ){
         if(n == 0)
-            return (nil, nil);
-        return (nil, sys->sprint("%r"));
+            raise "fail: readmsg: read failed, got 0 bytes";
+        raise sys->sprint("fail: readmsg: read failed: %r");
     }
     ml := g32(sbuf, 0);
     if(ml <= BIT32SZ)
-        return (nil, "invalid DHT message size");
+        raise "fail: readmsg: invalid message size";
     if(ml > msglim)
-        return (nil, "DHT message longer than agreed");
-    buf := array[ml] of byte;
-    buf[0:] = sbuf;
+        raise "fail: readmsg: message is longer that agreed";
+    buf := array [ml] of byte;
+    buf[:] = sbuf;
     if((n = sys->readn(fd, buf[BIT32SZ:], ml-BIT32SZ)) != ml-BIT32SZ){
         if(n == 0)
-            return (nil, "DHT message truncated");
-        return (nil, sys->sprint("%r"));
+            raise "fail: readmsg: message truncated";
+        raise sys->sprint("fail: readmsg: read failed: %r");
     }
-    return (buf, nil);
+    return buf;
 }
 
+# What is that?
 istmsg(f: array of byte): int
 {
     if(len f < H)
-        return -1;
+        raise "fail: istmsg: buffer too small to be a message";
     return (int f[BIT32SZ] & 1) == 0;
 }
 
