@@ -12,6 +12,8 @@ include "daytime.m";
     daytime: Daytime;
 include "math.m";
     math: Math;
+include "lists.m";
+    lists: Lists;
 include "bigkey.m";
     bigkey: Bigkey;
     Key: import bigkey;
@@ -69,6 +71,9 @@ init()
     bigkey = load Bigkey Bigkey->PATH;
     if (bigkey == nil)
         badmodule(Bigkey->PATH);
+    lists = load Lists Lists->PATH;
+    if (lists == nil)
+        badmodule(lists->PATH);
     bigkey->init();
 }
 
@@ -602,23 +607,33 @@ Bucket.print(b: self ref Bucket, tabs: int)
 
 Contacts.addcontact(c: self ref Contacts, n: ref Node)
 {
-    if (n.id.eq(c.localid))
+    if (n.id.eq(c.local.node.id))
         return;
 
+    <-c.local.sync;
     bucketInd := c.findbucket(n.id);
     #TODO: Update lastaccess time?
     case c.buckets[bucketInd].addnode(*n)
     {
         * =>
             #Success, nothing to do here.
+            c.local.sync <-= 1;
         EBucketFull => 
             #TODO: Substitute to section 2.2 (see l.152 of p2plib)
-            if (c.buckets[bucketInd].isinrange(c.localid))
+            if (c.buckets[bucketInd].isinrange(c.local.node.id))
             {
+                c.local.sync <-= 1;
                 c.split(bucketInd);
                 c.addcontact(n);
             }
+            else
+            {
+                ch := c.local.sendmsg(c.buckets[bucketInd].nodes[0], ref Tmsg.Ping(Key.generate(),
+                    c.local.node.id, c.buckets[bucketInd].nodes[0].id));
+                spawn replacefirstnode(c, *n, c.buckets[bucketInd].nodes[0], ch);
+            }
         EAlreadyPresent =>
+            c.local.sync <-= 1;
             c.removecontact(n.id);
             c.addcontact(n);
     }
@@ -648,6 +663,7 @@ Contacts.split(c: self ref Contacts, idx: int)
 }
 Contacts.removecontact(c: self ref Contacts, id: Key)
 {
+    <-c.local.sync;
     trgbucket := c.buckets[c.findbucket(id)];
     idx := trgbucket.findnode(id);
     if (idx == -1)
@@ -657,6 +673,7 @@ Contacts.removecontact(c: self ref Contacts, id: Key)
     nodes[idx:] = trgbucket.nodes[idx+1:];
     trgbucket.nodes = nodes;
     c.buckets[c.findbucket(id)] = trgbucket;
+    c.local.sync <-= 1;
 }
 Contacts.findbucket(c: self ref Contacts, id: Key): int
 {
@@ -734,7 +751,7 @@ Contacts.findclosenodes(c: self ref Contacts, id: Key): array of Node
 Contacts.print(c: self ref Contacts, tabs: int)
 {
     indent := string array[tabs] of {* => byte '\t'}; 
-    sys->print("%sContacts [key=%s]\n", indent, c.localid.text());
+    sys->print("%sContacts [key=%s]\n", indent, c.local.node.id.text());
     for (i := 0; i < len c.buckets; i++)
         c.buckets[i].print(tabs + 1);
 }
@@ -745,18 +762,81 @@ killpid(pid: int)
     if(fd != nil)
         sys->fprint(fd, "kill");
 }
-Local.process(l: self ref Local, conn: Sys->Connection)
+Local.process(l: self ref Local)
 {
     l.processpid = sys->pctl(0, nil);
 
     # reading incoming packets
-    buffer := array [60000] of byte;
-    conn.dfd = sys->open(conn.dir + "/data", Sys->OREAD);
+    buffer := array [MAXRPC] of byte;
+    l.conn.dfd = sys->open(l.conn.dir + "/data", Sys->OREAD);
     while (1)
     {
-        bytesread := sys->read(conn.dfd, buffer, len buffer);
-        # actually processing data here...
+        bytesread := sys->read(l.conn.dfd, buffer, len buffer);
+        if (bytesread <= 0)
+            raise sys->sprint("fail:Local.process:read error:%r");
+        if (bytesread < H)
+            continue;
+        msgtype := int buffer[4];
+        if (msgtype & 1)
+            spawn l.processrmsg(buffer);
+        else
+            spawn l.processtmsg(buffer);
     }
+}
+Local.processtmsg(l: self ref Local, buf: array of byte)
+{
+    {
+        (nil, msg) := Tmsg.unpack(buf);
+        if (!msg.targetID.eq(l.node.id) || msg.senderID.eq(l.node.id))
+            return;
+
+        #l.contacts.addcontact(Node(msg.senderID, ));
+
+        pick m := msg {
+            Ping =>
+                answer := ref Rmsg.Ping(m.uid, l.node.id, m.senderID);
+                answerbuf := answer.pack();
+                sys->write(l.conn.dfd, answerbuf, len answerbuf);
+            Store =>
+                # TODO: actually store the item
+                answer := ref Rmsg.Store(m.uid, l.node.id, m.senderID, 42);
+                answerbuf := answer.pack();
+                sys->write(l.conn.dfd, answerbuf, len answerbuf);
+            FindNode =>
+                nodes := l.contacts.findclosenodes(m.key);
+                answer := ref Rmsg.FindNode(m.uid, l.node.id, m.senderID, nodes);
+                answerbuf := answer.pack();
+                sys->write(l.conn.dfd, answerbuf, len answerbuf);
+            FindValue =>
+                # TODO: actually find the value in store
+                result := FVNodes;
+                nodes := l.contacts.findclosenodes(m.key);
+                answer := ref Rmsg.FindValue(m.uid, l.node.id, m.senderID, result, nodes, array [0] of byte);
+                answerbuf := answer.pack();
+                sys->write(l.conn.dfd, answerbuf, len answerbuf);
+        }
+    }
+#    exception e
+#    {
+#        "fail:*" =>
+#            # nop
+#    }
+}
+Local.processrmsg(l: self ref Local, buf: array of byte)
+{
+    {
+        (nil, msg) := Rmsg.unpack(buf);
+        if (!msg.targetID.eq(l.node.id) || msg.senderID.eq(l.node.id))
+            return;
+
+        # check out table and send msg to channel
+        # thats all!
+    }
+#c    exception e
+#    {
+#        "fail:*" =>
+#            # nop
+#    }
 }
 Local.timer(l: self ref Local)
 {
@@ -768,34 +848,84 @@ Local.timer(l: self ref Local)
         sys->sleep(1000);
     }
 }
+Local.syncthread(l: self ref Local)
+{
+    l.syncpid = sys->pctl(0, nil);
+
+    while (1)
+    {
+        l.sync <-= 1;
+        <-l.sync;
+    }
+}
+Local.sendmsg(l: self ref Local, n: Node, msg: ref Tmsg): chan of ref Rmsg
+{
+    ch := chan of ref Rmsg;
+    l.callbacks = lists->append(l.callbacks, (msg.uid, ch));
+    buf := msg.pack();
+    sys->write(l.conn.dfd, buf, len buf);
+    return ch;
+}
 Local.destroy(l: self ref Local)
 {
     # just kill everybody
-    #killpid(l.processpid);
-    #killpid(l.timerpid);
+    killpid(l.processpid);
+    killpid(l.timerpid);
+    killpid(l.syncpid);
 }
 
+# Callbacks
+timer(ch: chan of int, timeout: int)
+{
+    sys->sleep(timeout);
+    ch <-= 1;
+}
+replacefirstnode(c: ref Contacts, toadd: Node, pingnode: Node, ch: chan of ref Rmsg)
+{
+    answer: ref Rmsg;
+    killerch := chan of int;
+    spawn timer(killerch, 1000);
+    alt {
+        answer = <-ch =>
+            pick m := answer {
+                Ping =>
+                    if (!m.senderID.eq(pingnode.id))
+                        break; # TODO: bad thing also
+                    c.removecontact(pingnode.id);
+                    c.addcontact(ref pingnode);
+                * =>
+                    # TODO: bad thing!
+            }
+        <-killerch =>
+            c.removecontact(pingnode.id);
+            c.addcontact(ref toadd);
+    }
+}
 
 start(localaddr: string, bootstrap: ref Node, id: Key): ref Local
 {
     node := Node(id, localaddr, 0);
-    contacts := ref Contacts(array [1] of ref Bucket, id);
+    contacts := ref Contacts(array [1] of ref Bucket, nil);
     # construct the first bucket
     contacts.buckets[0] = ref Bucket(array [0] of Node,
         Key(array[BB] of { * => byte 0 }),
         Key(array[BB] of { * => byte 16rFF }),
         *daytime->local(daytime->now()));
 
-    store: list of (Key, array of byte, Daytime->Tm);
-    server := ref Local(node, contacts, store, 0, 0);
-
     # try to announce connection
-    #(err, c) := sys->announce(localaddr);
-    #if (err != 0)
-    #    return nil;
+    (err, c) := sys->announce(localaddr);
+    if (err != 0)
+        return nil;
 
-    #spawn server.process(c);
-    #spawn server.timer();
+    store: list of (Key, array of byte, Daytime->Tm);
+    server := ref Local(node, contacts, store, nil,
+        0, 0, 0, c, chan of int);
+
+    server.contacts.local = server;
+
+    spawn server.process();
+    spawn server.timer();
+    spawn server.syncthread();
 
     return server;
 }

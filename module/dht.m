@@ -42,6 +42,11 @@ Dht: module
 	EAlreadyPresent,
 	EMax: con 100+iota;
 
+	# FindValue result codes
+	FVNodes,
+	FVValue,
+	FVMax: con iota;
+
 	Node: adt {
 		id: Key;
 		addr: string;
@@ -117,7 +122,7 @@ Dht: module
 
 	Contacts: adt {
         buckets: array of ref Bucket;
-        localid: Key;
+        local: ref Local;
 
         addcontact: fn(nil: self ref Contacts, n: ref Node); 
         removecontact: fn(nil: self ref Contacts, id: Key); 
@@ -137,12 +142,22 @@ Dht: module
 		store: list of (Key, array of byte, Daytime->Tm);
 
 		# private data
-		timerpid, processpid: int;
+		callbacks: list of (Key, chan of ref Rmsg);
+		timerpid, processpid, syncpid: int;
+		conn: Sys->Connection;
+		sync: chan of int;
 
 		# do some periodic processing
-		process: fn(nil: self ref Local, conn: Sys->Connection);
+		process: fn(nil: self ref Local);
+		# process some message
+		processrmsg: fn(nil: self ref Local, buf: array of byte);
+		processtmsg: fn(nil: self ref Local, buf: array of byte);
+		# send the message and setup callback with given channel
+		sendmsg: fn(nil: self ref Local, n: Node, msg: ref Tmsg): chan of ref Rmsg;
 		# fire the event with some interval
 		timer: fn (nil: self ref Local);
+		# the thing that would sync everything
+		syncthread: fn (nil: self ref Local);
 		# finish all internal threads and close the server
 		destroy: fn(nil: self ref Local);
 	};
