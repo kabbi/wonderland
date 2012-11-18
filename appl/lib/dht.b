@@ -23,7 +23,6 @@ LEN: con BIT32SZ;   # string and array length field
 COUNT: con BIT32SZ;
 OFFSET: con BIT64SZ;
 KEY: con BB+LEN;
-NODE: con KEY+LEN+BIT32SZ;
 
 H: con BIT32SZ+BIT8SZ+KEY+KEY+KEY;  # minimum header length: size[4] type uid[20] sender[20] target[20]
 
@@ -36,11 +35,11 @@ RPing =>    H,  # no data
 TStore =>   H+KEY+LEN+BIT32SZ,      # key[20] data[4+] ask[4]
 RStore =>   H+BIT32SZ,              # result[4]
 
-TFindValue =>   H+KEY,              # no data
-RFindValue =>   H+BIT32SZ+LEN+LEN,  # result[4] nodes[4+] value[4+]
-
 TFindNode =>    H+KEY,      # no data
 RFindNode =>    H+LEN,      # nodes[4+]
+
+TFindValue =>   H+KEY,              # no data
+RFindValue =>   H+BIT32SZ+LEN+LEN,  # result[4] nodes[4+] value[4+]
 };
 
 badmodule(p: string)
@@ -192,6 +191,7 @@ gnode(a: array of byte, o: int): (Node, int)
 gnodes(a: array of byte, o: int): (array of Node, int)
 {
     l := g32(a, o);
+    o += BIT32SZ;
     if (l < 0)
         raise "fail: gnodes: malformed packet";
     nodes := array [l] of Node;
@@ -201,7 +201,7 @@ gnodes(a: array of byte, o: int): (array of Node, int)
         (node, o) = gnode(a, o);
         nodes[i] = node;
     }
-    return (nodes, -1);
+    return (nodes, o);
 }
 
 
@@ -283,7 +283,7 @@ Tmsg.unpack(f: array of byte): (int, ref Tmsg)
     if(mtype >= len hdrlen || (mtype&1) != 0 || size < hdrlen[mtype])
         raise "fail: Tmsg.unpack: unknown packet type";
 
-    o := 5; # offset
+    o := BIT32SZ + 1; # offset
     uid, senderID, targetID: Key;
     (uid, o) = gkey(f, o);
     (senderID, o) = gkey(f, o);
@@ -342,7 +342,7 @@ Tmsg.text(t: self ref Tmsg): string
 
 Tmsg.read(fd: ref Sys->FD, msglim: int): ref Tmsg
 {
-    msg := readmsg(fd, msglim);
+    msg := readbuf(fd, msglim);
     (nil, tmsg) := Tmsg.unpack(msg); 
     return tmsg;
 }
@@ -363,7 +363,7 @@ Rmsg.mtype(r: self ref Rmsg): int
 
 Rmsg.packedsize(r: self ref Rmsg): int
 {
-    mtype := ttag2type[tagof r];
+    mtype := rtag2type[tagof r];
     if(mtype <= 0)
         return 0;
     ml := hdrlen[mtype];
@@ -371,11 +371,20 @@ Rmsg.packedsize(r: self ref Rmsg): int
     Ping =>
         # no dynamic data
     Store =>
-        ml += BIT32SZ;
+        # no dynamic data
     FindNode =>
-        ml += (len m.nodes)*NODE;
+        for (i := 0; i < len m.nodes; i++)
+        {
+            ml += KEY + BIT32SZ + LEN;
+            ml += len (array of byte m.nodes[i].addr);
+        }
     FindValue =>
-        ml += BIT32SZ+(len m.nodes)*NODE+(len m.value);
+        ml += len m.value;
+        for (i := 0; i < len m.nodes; i++)
+        {
+            ml += KEY + BIT32SZ + LEN;
+            ml += len (array of byte m.nodes[i].addr);
+        }
     }
     return ml;
 }
@@ -388,7 +397,7 @@ Rmsg.pack(r: self ref Rmsg): array of byte
     d := array [ds] of byte;
     o := 0; # offset
     o = p32(d, o, ds);
-    d[o++] = byte ttag2type[tagof r];
+    d[o++] = byte rtag2type[tagof r];
     o = pkey(d, o, r.uid);
     o = pkey(d, o, r.senderID);
     o = pkey(d, o, r.targetID);
@@ -427,7 +436,7 @@ Rmsg.unpack(f: array of byte): (int, ref Rmsg)
     if(mtype >= len hdrlen || (mtype&1) != 1 || size < hdrlen[mtype])
         raise "fail: Rmsg.unpack: unknown packet type";
 
-    o := 5; # offset
+    o := BIT32SZ + 1; # offset
     uid, senderID, targetID: Key;
     (uid, o) = gkey(f, o);
     (senderID, o) = gkey(f, o);
@@ -439,16 +448,16 @@ Rmsg.unpack(f: array of byte): (int, ref Rmsg)
     case mtype {
     * =>
         raise "fail: Rmsg.unpack: bad message type";
-    TPing =>
+    RPing =>
         return (H, ref Rmsg.Ping(uid, senderID, targetID));
-    TStore =>
+    RStore =>
         result := g32(f, o);
         return (o+BIT32SZ, ref Rmsg.Store(uid, senderID, targetID, result));
-    TFindNode =>
+    RFindNode =>
         nodes: array of Node;
         (nodes, o) = gnodes(f, o);
         return (o, ref Rmsg.FindNode(uid, senderID, targetID, nodes));
-    TFindValue =>
+    RFindValue =>
         # implement reading!
         result := g32(f, o);
         o += BIT32SZ;
@@ -502,12 +511,12 @@ Rmsg.text(r: self ref Rmsg): string
 
 Rmsg.read(fd: ref Sys->FD, msglim: int): ref Rmsg
 {
-    msg := readmsg(fd, msglim);
+    msg := readbuf(fd, msglim);
     (nil, rmsg) := Rmsg.unpack(msg); 
     return rmsg;
 }
 
-readmsg(fd: ref Sys->FD, msglim: int): array of byte
+readbuf(fd: ref Sys->FD, msglim: int): array of byte
 {
     if(msglim <= 0)
         msglim = MAXRPC;
