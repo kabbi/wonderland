@@ -141,14 +141,14 @@ p64(a: array of byte, o: int, b: big): int
 
 g32(a: array of byte, o: int): int
 {
-    if (o + BIT32SZ >= len a)
+    if (o + BIT32SZ > len a)
         raise "fail: g32: malformed packet";
     return (((((int a[o+3] << 8) | int a[o+2]) << 8) | int a[o+1]) << 8) | int a[o];
 }
 
 g64(a: array of byte, o: int): big
 {
-    if (o + BIT64SZ >= len a)
+    if (o + BIT64SZ > len a)
         raise "fail: g64: malformed packet";
     b0 := (((((int a[o+3] << 8) | int a[o+2]) << 8) | int a[o+1]) << 8) | int a[o];
     b1 := (((((int a[o+7] << 8) | int a[o+6]) << 8) | int a[o+5]) << 8) | int a[o+4];
@@ -168,7 +168,7 @@ garray(a: array of byte, o: int): (array of byte, int)
     l := g32(a, o);
     o += LEN;
     e := o+l;
-    if(e > len a)
+    if(e > len a || l < 0)
         raise "fail: garray: malformed packet";
     return (a[o:e], e);
 }
@@ -269,10 +269,15 @@ Tmsg.unpack(f: array of byte): (int, ref Tmsg)
     if(len f < H)
         raise "fail: Tmsg.unpack: buffer too small";
     size := g32(f, 0);
-    if(len f != size){
+    if (len f != size)
+    {
+        if (size < 0)
+            raise "fail: Tmsg.unpack: buffer smaller than msg len";
         if(len f < size)
             raise "fail: Tmsg.unpack: buffer too small";
         f = f[0:size];  # trim to exact length
+        if(len f < H)
+            raise "fail: Tmsg.unpack: msg len read is too small";
     }
     mtype := int f[4];
     if(mtype >= len hdrlen || (mtype&1) != 0 || size < hdrlen[mtype])
@@ -298,6 +303,7 @@ Tmsg.unpack(f: array of byte): (int, ref Tmsg)
         data: array of byte;
         (data, o) = garray(f, o);
         ask := g32(f, o);
+        o += BIT32SZ;
         return (o, ref Tmsg.Store(uid, senderID, targetID, key, data, ask));
     TFindNode =>
         key: Key;
@@ -409,10 +415,13 @@ Rmsg.unpack(f: array of byte): (int, ref Rmsg)
     if(len f < H)
         raise "fail: Rmsg.unpack: buffer too small";
     size := g32(f, 0);
-    if(len f != size){
+    if(len f != size)
+    {
         if(len f < size)
-            raise "fail: Rmsg.unpack: buffer too small";
+            raise "fail: Rmsg.unpack: buffer smaller than msg len";
         f = f[0:size];  # trim to exact length
+        if(len f < H)
+            raise "fail: Rmsg.unpack: msg len read is too small";
     }
     mtype := int f[4];
     if(mtype >= len hdrlen || (mtype&1) != 1 || size < hdrlen[mtype])
@@ -503,7 +512,8 @@ readmsg(fd: ref Sys->FD, msglim: int): array of byte
     if(msglim <= 0)
         msglim = MAXRPC;
     sbuf := array [BIT32SZ] of byte;
-    if((n := sys->readn(fd, sbuf, BIT32SZ)) != BIT32SZ){
+    if((n := sys->readn(fd, sbuf, BIT32SZ)) != BIT32SZ)
+    {
         if(n == 0)
             raise "fail: readmsg: read failed, got 0 bytes";
         raise sys->sprint("fail: readmsg: read failed: %r");
@@ -515,7 +525,8 @@ readmsg(fd: ref Sys->FD, msglim: int): array of byte
         raise "fail: readmsg: message is longer that agreed";
     buf := array [ml] of byte;
     buf[:] = sbuf;
-    if((n = sys->readn(fd, buf[BIT32SZ:], ml-BIT32SZ)) != ml-BIT32SZ){
+    if((n = sys->readn(fd, buf[BIT32SZ:], ml-BIT32SZ)) != ml-BIT32SZ)
+    {
         if(n == 0)
             raise "fail: readmsg: message truncated";
         raise sys->sprint("fail: readmsg: read failed: %r");
