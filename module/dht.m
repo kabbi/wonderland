@@ -7,7 +7,7 @@ Dht: module
 	BIT32SZ:	con 4;
 	BIT64SZ:	con 8;
 
-	IOHDRSZ:	con 70;	# room for Twrite/Rread header
+	IOHDRSZ:	con 70;	# room for Tmsg/Rmsg header
 	MAXFDATA: con 8192;	# `reasonable' iounit
 	MAXRPC:	con IOHDRSZ+MAXFDATA;	# usable default for fversion and iounit
 

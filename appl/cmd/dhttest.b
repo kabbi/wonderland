@@ -1,27 +1,41 @@
 implement dhttest;
 include "sys.m";
-	sys: Sys;
+    sys: Sys;
 include "draw.m";
+include "keyring.m";
+include "security.m";
+    random: Random;
 include "daytime.m";
     daytime: Daytime;
 include "bigkey.m";
-	bigkey: Bigkey;
-	Key: import bigkey;
+    bigkey: Bigkey;
+    Key: import bigkey;
 include "dht.m";
-	dht: Dht;
-	Node,Bucket,Contacts,Local,K,BB: import dht;
+    dht: Dht;
+    Node,Bucket,Contacts,Local,K,BB,
+    MAXRPC,Rmsg,Tmsg: import dht;
 
 dhttest: module {
-	init: fn(nil: ref Draw->Context, argv: list of string);
+    init: fn(nil: ref Draw->Context, argv: list of string);
 };
 
 badmodule(p: string)
 {
-	sys->fprint(sys->fildes(2), "cannot load %s: %r\n", p);
-	raise "fail:bad module";
+    sys->fprint(sys->fildes(2), "cannot load %s: %r\n", p);
+    raise "fail:bad module";
 }
 
 local: ref Local;
+
+arreq(a1, a2: array of byte): int
+{
+    if (len a1 != len a2)
+        return 0;
+    for (i := 0; i < len a1; i++)
+        if (a1[i] != a2[i])
+            return 0;
+    return 1;
+}
 
 dist(k1, k2: Key): Key
 {
@@ -34,15 +48,15 @@ dist(k1, k2: Key): Key
 
 initlocal(verbose: int): ref Local
 {
-	l := dht->start("udp!127.0.0.1!1234", ref Node(Key.generate(),
-		"nil", 0), Key.generate());
-	if (l == nil)
-	{
-		sys->print("failed to start server!\n%r\n");
+    l := dht->start("udp!127.0.0.1!1234", ref Node(Key.generate(),
+        "nil", 0), Key.generate());
+    if (l == nil)
+    {
+        sys->print("failed to start server!\n%r\n");
         raise "fail:failed to start server";
-	}
+    }
     if (verbose)
-    	sys->print("started Dht, local id %s\n", l.node.id.text());
+        sys->print("started Dht, local id %s\n", l.node.id.text());
     return l;
 }
 
@@ -52,10 +66,10 @@ clean(verbose: int): int
         sys->print("Cleaning local...\n");
     contacts := ref Contacts(array [1] of ref Bucket, Key.generate());
     contacts.buckets[0] = ref Bucket(array [0] of Node,
-        Key(array[BB] of { * => byte 0 }),
-        Key(array[BB] of { * => byte 16rFF }),
-        *daytime->local(daytime->now()));
-        local.contacts = contacts;
+    Key(array[BB] of { * => byte 0 }),
+    Key(array[BB] of { * => byte 16rFF }),
+    *daytime->local(daytime->now()));
+    local.contacts = contacts;
     if (verbose)
         sys->print("OK. Local cleaned\n");
     return 0;
@@ -124,13 +138,42 @@ closest(key: Key, verbose: int): array of Node
 {
     if (verbose)
         sys->print("looking for key: %s\n", key.text());
-	close := local.contacts.findclosenodes(key);
-	for (i := 0; i < len close && verbose; i++)
-	{
-		sys->print("Distance from %s = ", (ref close[i]).text());
-		sys->print("%s\n", dist(close[i].id, key).text());
-	}
+    close := local.contacts.findclosenodes(key);
+    for (i := 0; i < len close && verbose; i++)
+    {
+        sys->print("Distance from %s = ", (ref close[i]).text());
+        sys->print("%s\n", dist(close[i].id, key).text());
+    }
     return close;
+}
+
+randomtmsg(): ref Tmsg
+{
+    msgtype := random->randomint(random->NotQuiteRandom) & 16rFF;
+    msgtype = msgtype % 4;
+
+    uid := Key.generate();
+    senderID := Key.generate();
+    targetID := Key.generate();
+
+    case msgtype {
+        0 =>
+            return ref Tmsg.Ping(uid, senderID, targetID);
+        1 =>
+            key := Key.generate();
+            l := random->randomint(random->NotQuiteRandom) & 16rFF;
+            data := random->randombuf(random->NotQuiteRandom, l);
+            ask := random->randomint(random->NotQuiteRandom) & 16rFF;
+            return ref Tmsg.Store(uid, senderID, targetID, key, data, ask);
+        2 =>
+            key := Key.generate();
+            return ref Tmsg.FindNode(uid, senderID, targetID, key);
+        3 =>
+            key := Key.generate();
+            return ref Tmsg.FindValue(uid, senderID, targetID, key);
+    }
+
+    return nil;
 }
 
 # Tests
@@ -139,6 +182,7 @@ closesttest(count: int, verbose: int)
 {
     if (verbose)
         sys->print("trying to get K closest to the random node\n");
+# Routing table tests
     addrandoms(count, 0);
     randomid := Key.generate();
     close := closest(randomid, 0);
@@ -246,6 +290,72 @@ filltest(verbose: int)
     }
 }
 
+# Rmsg/Tmsg tests
+
+randomunpacktest()
+{
+    sys->print("Trying to unpack random buffer\n");
+    l := random->randomint(random->NotQuiteRandom);
+    l = l % (MAXRPC * 2);
+    if (l < 0)
+        l = -l;
+    l += 5;
+    data := random->randombuf(random->NotQuiteRandom, l);
+    data[0] = byte l >> 0;
+    data[1] = byte l >> 8;
+    data[2] = byte l >> 16;
+    data[3] = byte l >> 24;
+
+    data[4] = byte 100;
+    {
+        sys->print("Parsing Tmsg\n");
+        (nil, msg) := Tmsg.unpack(data);
+        sys->print("Aw, success! Message read:\n%s\n", msg.text());
+    }
+    exception e
+    {
+        "fail:*" =>
+            sys->print("Exception catched: %s\n", e);
+    }
+
+    data[4] = byte 101;
+    {
+        sys->print("Parsing Rmsg\n");
+        (nil, msg) := Rmsg.unpack(data);
+        sys->print("Aw, success! Message read:\n%s\n", msg.text());
+    }
+    exception e
+    {
+        "fail:*" =>
+            sys->print("Exception catched: %s\n", e);
+    }
+
+    sys->print("OK! Random unpack test passed!\n");
+    sys->print("\n");
+}
+
+randompacktest()
+{
+    sys->print("Trying to pack and unpack random messages\n");
+
+    msg := randomtmsg();
+    buf := msg.pack();
+    buflen := len buf;
+    (readlen, newmsg) := Tmsg.unpack(buf);
+    newbuf := newmsg.pack();
+    if (readlen != buflen || !arreq(buf, newbuf))
+    {
+        sys->print("Something went wrong!\n");
+        sys->print("Buffer is %d bytes, processed %d\n", buflen, readlen);
+        sys->print("Message: %s\n", msg.text());
+        sys->print("Unpacked message: %s\n", newmsg.text());
+        raise "tast failed:randompack";
+    }
+
+    sys->print("OK! Random pack test passed!");
+    sys->print("\n");
+}
+
 starttest()
 {
     local = initlocal(0);
@@ -264,28 +374,31 @@ starttest()
         sys->print("Deletion test failed!\n");
         raise "test fail:deletion";
     }
-    #while (1)
-      filltest(1);
+    while(1)
+        randompacktest();
 }
 
 init(nil: ref Draw->Context, nil: list of string)
 {
-	# loading modules
-	sys = load Sys Sys->PATH;
-	daytime = load Daytime Daytime->PATH;
-	if (daytime == nil)
-		badmodule(Daytime->PATH);
-	
-	dht = load Dht Dht->PATH;
-	if (dht == nil)
-		badmodule(Dht->PATH);
-	dht->init();
-	bigkey = load Bigkey Bigkey->PATH;
-	if (bigkey == nil)
-		badmodule(Bigkey->PATH);
-	bigkey->init();
+    # loading modules
+    sys = load Sys Sys->PATH;
+    daytime = load Daytime Daytime->PATH;
+    if (daytime == nil)
+        badmodule(Daytime->PATH);
+    
+    random = load Random Random->PATH;
+    if (random == nil)
+        badmodule(Random->PATH);
+    dht = load Dht Dht->PATH;
+    if (dht == nil)
+        badmodule(Dht->PATH);
+    dht->init();
+    bigkey = load Bigkey Bigkey->PATH;
+    if (bigkey == nil)
+        badmodule(Bigkey->PATH);
+    bigkey->init();
 
     starttest();
-	sys->print("cleaning up\n");
-	local.destroy();
+    sys->print("cleaning up\n");
+    local.destroy();
 }
