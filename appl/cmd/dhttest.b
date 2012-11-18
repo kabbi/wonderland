@@ -135,11 +135,10 @@ closest(key: Key, verbose: int): array of Node
 
 # Tests
 
-closesttest(count: int)
+closesttest(count: int, verbose: int)
 {
-    local.destroy();
-    local = initlocal(0);
-    sys->print("trying to get K closest to the random node\n");
+    if (verbose)
+        sys->print("trying to get K closest to the random node\n");
     addrandoms(count, 0);
     randomid := Key.generate();
     close := closest(randomid, 0);
@@ -171,19 +170,21 @@ closesttest(count: int)
                 }
             }
     }
-    sys->print("OK! Closest test passed!\n");
-	sys->print("\n");
+    if (verbose)
+        sys->print("OK! Closest test passed!\n\n");
 }
 
-randomidinrangetest(count: int) 
+randomidinrangetest(count: int, verbose: int) 
 {
-    local.destroy();
-    local = initlocal(0);
-	sys->print("checking randomidinbucketrange on %d random ids\n", count);
+    if (verbose)
+	    sys->print("checking randomidinbucketrange on %d random ids\n", count);
     b := Bucket(array[0] of Node, Key.generate(), Key.generate(), 
                                   *daytime->local(daytime->now()));
-    sys->print("bucket: \n");
-    (ref b).print(0);
+    if (verbose)
+    {
+        sys->print("bucket: \n");
+        (ref b).print(0);
+    }
     if (b.maxrange.lt(b.minrange))
     {
         tm := b.maxrange;
@@ -200,15 +201,14 @@ randomidinrangetest(count: int)
 			raise "test fail:randomidinrange";
 		}
 	}
-    sys->print("OK! Randomidinrange test passed!\n");
-	sys->print("\n");
+    if (verbose)
+        sys->print("OK! Randomidinrange test passed!\n\n");
 }
 
-sequentialtest()
+sequentialtest(verbose: int)
 {
-    local.destroy();
-    local = initlocal(0);
-    sys->print("Adding 160*K sequential keys\n");
+    if (verbose)
+        sys->print("Adding 160*K sequential keys\n");
 	for (i := 0; i < 160; i++)
 	{
 		for (j := 0; j <= K; j++)
@@ -219,16 +219,18 @@ sequentialtest()
 			local.contacts.addcontact(node);
 		}
 	}
-	sys->print("OK! Sequential-test passed! Added %d keys\n", countnodes(0));
-	sys->print("Number of buckets: %d\n", len local.contacts.buckets);
-	sys->print("\n");
+    if (verbose)
+ 	{
+        sys->print("OK! Sequential-test passed! Added %d keys\n", countnodes(0));
+        sys->print("Number of buckets: %d\n\n", len local.contacts.buckets);
+    }
 }
 
-filltest()
+filltest(verbose: int)
 {
-    local.destroy();
-    local = initlocal(0);
-    sys->print("Trying to fill the whole routing table\n");
+    sequentialtest(0);
+    if (verbose)
+        sys->print("Trying to fill the whole routing table\n");
 	for (i := 0; i < len local.contacts.buckets; i++)
 	{
 		for (j := 0; j <= K; j++)
@@ -237,9 +239,11 @@ filltest()
 			local.contacts.addcontact(node);
 		}
 	}
-	sys->print("OK! Total count of contacts: %d\n", countnodes(0));
-	sys->print("Number of buckets: %d\n", len local.contacts.buckets);
-	sys->print("\n");
+    if (verbose)
+	{
+        sys->print("OK! Total count of contacts: %d\n", countnodes(0));
+        sys->print("Number of buckets: %d\n\n", len local.contacts.buckets);
+    }
 }
 
 starttest()
@@ -261,7 +265,7 @@ starttest()
         raise "test fail:deletion";
     }
     #while (1)
-      filltest();
+      filltest(1);
 }
 
 init(nil: ref Draw->Context, nil: list of string)
