@@ -15,7 +15,7 @@ include "hashtable.m";
     HashTable: import hashtable;
 include "dht.m";
     dht: Dht;
-    Node,Bucket,Contacts,Local,K,BB,
+    Node,Bucket,Contacts,Local,K,BB,B,
     MAXRPC,Rmsg,Tmsg: import dht;
 
 dhttest: module {
@@ -292,8 +292,8 @@ randomidinrangetest(count: int, verbose: int)
 sequentialtest(verbose: int)
 {
     if (verbose)
-        sys->print("Adding 160*K sequential keys\n");
-    for (i := 0; i < 160; i++)
+        sys->print("Adding B*K sequential keys\n");
+    for (i := 0; i < B; i++)
     {
         for (j := 0; j <= K; j++)
         {
@@ -439,7 +439,115 @@ starttest()
         sequentialtest(1);
 }
 
-init(nil: ref Draw->Context, nil: list of string)
+parsenode(args: list of string): ref Node
+{
+    if (args == nil)
+        return nil;
+
+    key := Key.parse(hd args);
+    if (key == nil)
+        return nil;
+
+    args = tl args;
+    if (args == nil)
+        return nil;
+
+    addr := hd args;
+    args = tl args;
+    if (args == nil)
+        return nil;
+        
+    rtt := int hd args;
+    return ref Node(*key, addr, rtt);
+}
+interactivetest()
+{
+    local = initlocal(0);
+    stdin := sys->fildes(0);
+    print();
+    while (1)
+    {
+        buf := array [100] of byte;
+        sys->print("\nDht> ");
+        readcnt := sys->read(stdin, buf, 100);
+        if (readcnt <= 0)
+            raise sys->sprint("fail:stdin read error:%r");
+        line := string buf[:readcnt - 1]; # also strip \n
+
+        (argcount, args) := sys->tokenize(line, " ");
+        if (argcount == 0)
+            continue;
+
+        case (hd args) {
+            "help" or "?" =>
+                sys->print("Dht module tester program\n");
+                sys->print("Available commands:\n");
+                sys->print("Manual contacts manipulation:\n");
+                sys->print("\taddcontact <id> <addr> <rtt>\n");
+                sys->print("\tdelcontact <id>\n");
+                sys->print("\tping <id>\n");
+                sys->print("\tclear\n");
+                sys->print("\tprint\n");
+                sys->print("Tests:\n");
+                sys->print("\tclosesttest <count>\n");
+                sys->print("\trandomidinrangetest <count>\n");
+                sys->print("\tsequentialtest\n");
+                sys->print("\tfilltest\n");
+                sys->print("\trandomunpackmsgtest\n");
+                sys->print("\tpackunpackmsgtest\n");
+                sys->print("Others:\n");
+                sys->print("\texit\n");
+                sys->print("\thelp\n");
+                sys->print("\t?\n");
+            "exit" or "quit" =>
+                return;
+            "addcontact" =>
+                args = tl args;
+                node := parsenode(args);
+                if (node == nil)
+                {
+                    sys->print("Bad node!\n");
+                    break;
+                }
+                local.contacts.addcontact(node);
+                sys->print("Node %s added!\n", node.text());
+            "delcontact" =>
+                key := Key.parse(hd (tl args));
+                if (key == nil)
+                {
+                    sys->print("Bad key!\n");
+                    break;
+                }
+                local.contacts.removecontact(*key);
+                sys->print("Node with key %s removed!\n", (*key).text());
+            "print" =>
+                print();
+            "clear" =>
+                clean(1);
+            "closesttest" =>
+                args = tl args;
+                if (args == nil)
+                    break;
+                closesttest(int hd args, 1);
+            "randomidinrangetest" =>
+                args = tl args;
+                if (args == nil)
+                    break;
+                randomidinrangetest(int hd args, 1);
+            "sequentialtest" =>
+                sequentialtest(1);
+            "filltest" =>
+                filltest(1);
+            "randomunpackmsgtest" =>
+                randomunpacktest();
+            "packunpackmsgtest" =>
+                randompackrmsgtest();
+                randompacktmsgtest();
+        }
+    }
+}
+
+init(nil: ref Draw->Context, args: list of string)
 {
     # loading modules
     sys = load Sys Sys->PATH;
@@ -459,7 +567,11 @@ init(nil: ref Draw->Context, nil: list of string)
         badmodule(Bigkey->PATH);
     bigkey->init();
 
-    starttest();
+    if (tl args != nil && hd (tl args) == "-i")
+        interactivetest();
+    else
+        starttest();
+
     sys->print("cleaning up\n");
     local.destroy();
 }

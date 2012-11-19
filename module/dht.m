@@ -17,7 +17,7 @@ Dht: module
 
 	# DHT constants
 	ALPHA:	con 1;
-	B:		con 160;
+	B:		con 32;
 	BB:		con B/8; # B in bytes
 	K:		con 5;
 	EXPIRE_TIME:	con 86410;
