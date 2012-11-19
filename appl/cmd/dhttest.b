@@ -442,21 +442,21 @@ starttest()
 parsenode(args: list of string): ref Node
 {
     if (args == nil)
-        return nil;
+        raise "fail:bad args";
 
     key := Key.parse(hd args);
     if (key == nil)
-        return nil;
+        raise "fail:bad key";
 
     args = tl args;
     if (args == nil)
-        return nil;
+        raise "fail:bad args";
 
     addr := hd args;
     args = tl args;
     if (args == nil)
-        return nil;
-        
+        raise "fail:bad args";
+
     rtt := int hd args;
     return ref Node(*key, addr, rtt);
 }
@@ -478,71 +478,72 @@ interactivetest()
         if (argcount == 0)
             continue;
 
-        case (hd args) {
-            "help" or "?" =>
-                sys->print("Dht module tester program\n");
-                sys->print("Available commands:\n");
-                sys->print("Manual contacts manipulation:\n");
-                sys->print("\taddcontact <id> <addr> <rtt>\n");
-                sys->print("\tdelcontact <id>\n");
-                sys->print("\tping <id>\n");
-                sys->print("\tclear\n");
-                sys->print("\tprint\n");
-                sys->print("Tests:\n");
-                sys->print("\tclosesttest <count>\n");
-                sys->print("\trandomidinrangetest <count>\n");
-                sys->print("\tsequentialtest\n");
-                sys->print("\tfilltest\n");
-                sys->print("\trandomunpackmsgtest\n");
-                sys->print("\tpackunpackmsgtest\n");
-                sys->print("Others:\n");
-                sys->print("\texit\n");
-                sys->print("\thelp\n");
-                sys->print("\t?\n");
-            "exit" or "quit" =>
-                return;
-            "addcontact" =>
-                args = tl args;
-                node := parsenode(args);
-                if (node == nil)
-                {
-                    sys->print("Bad node!\n");
-                    break;
-                }
-                local.contacts.addcontact(node);
-                sys->print("Node %s added!\n", node.text());
-            "delcontact" =>
-                key := Key.parse(hd (tl args));
-                if (key == nil)
-                {
-                    sys->print("Bad key!\n");
-                    break;
-                }
-                local.contacts.removecontact(*key);
-                sys->print("Node with key %s removed!\n", (*key).text());
-            "print" =>
-                print();
-            "clear" =>
-                clean(1);
-            "closesttest" =>
-                args = tl args;
-                if (args == nil)
-                    break;
-                closesttest(int hd args, 1);
-            "randomidinrangetest" =>
-                args = tl args;
-                if (args == nil)
-                    break;
-                randomidinrangetest(int hd args, 1);
-            "sequentialtest" =>
-                sequentialtest(1);
-            "filltest" =>
-                filltest(1);
-            "randomunpackmsgtest" =>
-                randomunpacktest();
-            "packunpackmsgtest" =>
-                randompackrmsgtest();
-                randompacktmsgtest();
+        {
+            case (hd args) {
+                "help" or "?" =>
+                    sys->print("Dht module tester program\n");
+                    sys->print("Available commands:\n");
+                    sys->print("Manual contacts manipulation:\n");
+                    sys->print("\taddcontact <id> <addr> <rtt>\n");
+                    sys->print("\tdelcontact <id>\n");
+                    sys->print("\tping <id>\n");
+                    sys->print("\tclear\n");
+                    sys->print("\tprint\n");
+                    sys->print("Tests:\n");
+                    sys->print("\tclosesttest <count>\n");
+                    sys->print("\trandomidinrangetest <count>\n");
+                    sys->print("\tsequentialtest\n");
+                    sys->print("\tfilltest\n");
+                    sys->print("\trandomunpackmsgtest\n");
+                    sys->print("\tpackunpackmsgtest\n");
+                    sys->print("Others:\n");
+                    sys->print("\texit\n");
+                    sys->print("\thelp\n");
+                    sys->print("\t?\n");
+                "exit" or "quit" =>
+                    return;
+                "addcontact" =>
+                    args = tl args;
+                    node := parsenode(args);
+                    local.contacts.addcontact(node);
+                    sys->print("Node %s added!\n", node.text());
+                "delcontact" =>
+                    key := Key.parse(hd (tl args));
+                    if (key == nil)
+                        raise "fail:bad key";
+                    local.contacts.removecontact(*key);
+                    sys->print("Node with key %s removed!\n", (*key).text());
+                "print" =>
+                    print();
+                "clear" =>
+                    clean(1);
+                "closesttest" =>
+                    args = tl args;
+                    if (args == nil)
+                        raise "fail:bad args";
+                    closesttest(int hd args, 1);
+                "randomidinrangetest" =>
+                    args = tl args;
+                    if (args == nil)
+                        raise "fail:bad args";
+                    randomidinrangetest(int hd args, 1);
+                "sequentialtest" =>
+                    sequentialtest(1);
+                "filltest" =>
+                    filltest(1);
+                "randomunpackmsgtest" =>
+                    randomunpacktest();
+                "packunpackmsgtest" =>
+                    randompackrmsgtest();
+                    randompacktmsgtest();
+                * =>
+                    raise "fail:no such command!";
+            }
+        }
+        exception e
+        {
+            "fail:*" =>
+                sys->print("Command failed: %s\n", e[5:]);
         }
     }
 }
