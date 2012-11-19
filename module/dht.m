@@ -122,7 +122,7 @@ Dht: module
 
 	Contacts: adt {
         buckets: array of ref Bucket;
-        local: ref Local;
+        local: cyclic ref Local;
 
         addcontact: fn(nil: self ref Contacts, n: ref Node); 
         removecontact: fn(nil: self ref Contacts, id: Key); 
@@ -135,14 +135,24 @@ Dht: module
         print: fn(nil: self ref Contacts, tabs: int);
 	};
 
+	StoreItem: adt {
+		data: array of byte;
+		lastaccess: int;
+	};
+
 	Local: adt {
 		node: Node;
-		contacts: ref Contacts;
+		contacts: cyclic ref Contacts;
 		# store consists of Key, data and last access time
-		store: list of (Key, array of byte, Daytime->Tm);
+		store: ref HashTable[ref StoreItem];
 
-		# private data
-		callbacks: list of (Key, chan of ref Rmsg);
+		# public API
+		dhtfindnode: fn(nil: self ref Local, id: Key): ref Node;
+		#dhtfindvalue: fn(nil: self ref Local, id: Key): array of byte;
+		#dhtstore: fn(nil: self ref Local, data: array of byte): int;
+
+		# private data and methods
+		callbacks: ref HashTable[chan of ref Rmsg];
 		timerpid, processpid, syncpid: int;
 		conn: Sys->Connection;
 		sync: chan of int;
@@ -150,10 +160,12 @@ Dht: module
 		# do some periodic processing
 		process: fn(nil: self ref Local);
 		# process some message
-		processrmsg: fn(nil: self ref Local, buf: array of byte);
-		processtmsg: fn(nil: self ref Local, buf: array of byte);
+		processrmsg: fn(nil: self ref Local, buf: array of byte, remoteaddr: string);
+		processtmsg: fn(nil: self ref Local, buf: array of byte, remoteaddr: string);
 		# send the message and setup callback with given channel
-		sendmsg: fn(nil: self ref Local, n: Node, msg: ref Tmsg): chan of ref Rmsg;
+		sendtmsg: fn(nil: self ref Local, n: ref Node, msg: ref Tmsg): chan of ref Rmsg;
+		# same as above, but without callbacks
+		sendrmsg: fn(nil: self ref Local, n: ref Node, msg: ref Rmsg);
 		# fire the event with some interval
 		timer: fn (nil: self ref Local);
 		# the thing that would sync everything

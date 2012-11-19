@@ -10,6 +10,9 @@ include "daytime.m";
 include "bigkey.m";
     bigkey: Bigkey;
     Key: import bigkey;
+include "hashtable.m";
+    hashtable: Hashtable;
+    HashTable: import hashtable;
 include "dht.m";
     dht: Dht;
     Node,Bucket,Contacts,Local,K,BB,
@@ -64,7 +67,7 @@ clean(verbose: int): int
 {
     if (verbose)
         sys->print("Cleaning local...\n");
-    contacts := ref Contacts(array [1] of ref Bucket, Key.generate());
+    contacts := ref Contacts(array [1] of ref Bucket, local);
     contacts.buckets[0] = ref Bucket(array [0] of Node,
     Key(array[BB] of { * => byte 0 }),
     Key(array[BB] of { * => byte 16rFF }),
@@ -433,7 +436,7 @@ starttest()
         raise "test fail:deletion";
     }
     while(1)
-        randompackrmsgtest();
+        sequentialtest(1);
 }
 
 init(nil: ref Draw->Context, nil: list of string)

@@ -2,6 +2,9 @@ implement Dht;
 
 include "sys.m";
     sys: Sys;
+include "ip.m";
+    ip: IP;
+    Udphdr, Udphdrlen, IPaddr: import ip;
 include "keyring.m";
     keyring: Keyring;
 include "encoding.m";
@@ -12,8 +15,13 @@ include "daytime.m";
     daytime: Daytime;
 include "math.m";
     math: Math;
+include "sort.m";
+    sort: Sort;
 include "lists.m";
     lists: Lists;
+include "hashtable.m";
+    hashtable: Hashtable;
+    HashTable: import hashtable;
 include "bigkey.m";
     bigkey: Bigkey;
     Key: import bigkey;
@@ -26,6 +34,8 @@ COUNT: con BIT32SZ;
 OFFSET: con BIT64SZ;
 KEY: con BB+LEN;
 
+STORESIZE: con 13;
+CALLBACKSIZE: con 13;
 H: con BIT32SZ+BIT8SZ+KEY+KEY+KEY;  # minimum header length: size[4] type uid[20] sender[20] target[20]
 
 # minimum packet sizes
@@ -53,6 +63,9 @@ badmodule(p: string)
 init()
 {
     sys = load Sys Sys->PATH;
+    ip = load IP IP->PATH;
+    if (ip == nil)
+        badmodule(IP->PATH);
     keyring = load Keyring Keyring->PATH;
     if (keyring == nil)
         badmodule(Keyring->PATH);
@@ -73,7 +86,13 @@ init()
         badmodule(Bigkey->PATH);
     lists = load Lists Lists->PATH;
     if (lists == nil)
-        badmodule(lists->PATH);
+        badmodule(Lists->PATH);
+    hashtable = load Hashtable Hashtable->PATH;
+    if (hashtable == nil)
+        badmodule(Hashtable->PATH);
+    sort = load Sort Sort->PATH;
+    if (sort == nil)
+        badmodule(Sort->PATH);
     bigkey->init();
 }
 
@@ -82,6 +101,14 @@ abs(a: int): int
     if (a < 0) 
         a *= -1;
     return a;
+}
+dist(k1, k2: Key): Key
+{
+    r := Key.generate();
+    r.data[:] = k1.data[:];
+    for (i := 0; i < BB; i++)
+        r.data[i] ^= k2.data[i];
+    return r;
 }
 
 pnodes(a: array of byte, o: int, na: array of Node): int
@@ -622,15 +649,18 @@ Contacts.addcontact(c: self ref Contacts, n: ref Node)
             #TODO: Substitute to section 2.2 (see l.152 of p2plib)
             if (c.buckets[bucketInd].isinrange(c.local.node.id))
             {
-                c.local.sync <-= 1;
                 c.split(bucketInd);
+                c.local.sync <-= 1;
                 c.addcontact(n);
             }
             else
             {
-                ch := c.local.sendmsg(c.buckets[bucketInd].nodes[0], ref Tmsg.Ping(Key.generate(),
-                    c.local.node.id, c.buckets[bucketInd].nodes[0].id));
-                spawn replacefirstnode(c, *n, c.buckets[bucketInd].nodes[0], ch);
+                msg := ref Tmsg.Ping(Key.generate(),
+                    c.local.node.id, c.buckets[bucketInd].nodes[0].id);
+                ch := c.local.sendtmsg(ref c.buckets[bucketInd].nodes[0], msg);
+                if (ch != nil)
+                    spawn replacefirstnode(c, *n, c.buckets[bucketInd].nodes[0], ch, msg.uid);
+                c.local.sync <-= 1;
             }
         EAlreadyPresent =>
             c.local.sync <-= 1;
@@ -767,53 +797,65 @@ Local.process(l: self ref Local)
     l.processpid = sys->pctl(0, nil);
 
     # reading incoming packets
-    buffer := array [MAXRPC] of byte;
+    buffer := array [MAXRPC + Udphdrlen] of byte;
     l.conn.dfd = sys->open(l.conn.dir + "/data", Sys->OREAD);
     while (1)
     {
         bytesread := sys->read(l.conn.dfd, buffer, len buffer);
         if (bytesread <= 0)
             raise sys->sprint("fail:Local.process:read error:%r");
-        if (bytesread < H)
+        if (bytesread < H + Udphdrlen)
             continue;
-        msgtype := int buffer[4];
+
+        hdr := Udphdr.unpack(buffer[:Udphdrlen], Udphdrlen);
+        remoteaddr := "udp!" + hdr.raddr.text() + "!" + string hdr.rport;
+
+        msgtype := int buffer[4 + Udphdrlen];
         if (msgtype & 1)
-            spawn l.processrmsg(buffer);
+            spawn l.processrmsg(buffer[Udphdrlen:], remoteaddr);
         else
-            spawn l.processtmsg(buffer);
+            spawn l.processtmsg(buffer[Udphdrlen:], remoteaddr);
     }
 }
-Local.processtmsg(l: self ref Local, buf: array of byte)
+Local.processtmsg(l: self ref Local, buf: array of byte, remoteaddr: string)
 {
     {
         (nil, msg) := Tmsg.unpack(buf);
         if (!msg.targetID.eq(l.node.id) || msg.senderID.eq(l.node.id))
             return;
 
-        #l.contacts.addcontact(Node(msg.senderID, ));
+        sender := ref Node(msg.senderID, remoteaddr, 0);
+        l.contacts.addcontact(sender);
 
         pick m := msg {
             Ping =>
                 answer := ref Rmsg.Ping(m.uid, l.node.id, m.senderID);
-                answerbuf := answer.pack();
-                sys->write(l.conn.dfd, answerbuf, len answerbuf);
+                l.sendrmsg(sender, answer);
             Store =>
-                # TODO: actually store the item
+                l.store.insert(m.key.text(), ref StoreItem(m.data, daytime->now()));
                 answer := ref Rmsg.Store(m.uid, l.node.id, m.senderID, 42);
-                answerbuf := answer.pack();
-                sys->write(l.conn.dfd, answerbuf, len answerbuf);
+                l.sendrmsg(sender, answer);
             FindNode =>
                 nodes := l.contacts.findclosenodes(m.key);
                 answer := ref Rmsg.FindNode(m.uid, l.node.id, m.senderID, nodes);
-                answerbuf := answer.pack();
-                sys->write(l.conn.dfd, answerbuf, len answerbuf);
+                l.sendrmsg(sender, answer);
             FindValue =>
-                # TODO: actually find the value in store
-                result := FVNodes;
-                nodes := l.contacts.findclosenodes(m.key);
-                answer := ref Rmsg.FindValue(m.uid, l.node.id, m.senderID, result, nodes, array [0] of byte);
-                answerbuf := answer.pack();
-                sys->write(l.conn.dfd, answerbuf, len answerbuf);
+                result: int;
+                nodes := array [0] of Node;
+                value := array [0] of byte;
+                item := l.store.find(m.key.text());
+                if (item == nil)
+                {
+                    result = FVNodes;
+                    nodes = l.contacts.findclosenodes(m.key);
+                }
+                else
+                {
+                    result = FVValue;
+                    value = item.data;
+                }
+                answer := ref Rmsg.FindValue(m.uid, l.node.id, m.senderID, result, nodes, value);
+                l.sendrmsg(sender, answer);
         }
     }
 #    exception e
@@ -822,17 +864,19 @@ Local.processtmsg(l: self ref Local, buf: array of byte)
 #            # nop
 #    }
 }
-Local.processrmsg(l: self ref Local, buf: array of byte)
+Local.processrmsg(l: self ref Local, buf: array of byte, remoteaddr: string)
 {
     {
         (nil, msg) := Rmsg.unpack(buf);
         if (!msg.targetID.eq(l.node.id) || msg.senderID.eq(l.node.id))
             return;
 
-        # check out table and send msg to channel
-        # thats all!
+        ch: chan of ref Rmsg;
+        ch = l.callbacks.find(msg.uid.text());
+        if (ch != nil)
+            ch <-= msg;
     }
-#c    exception e
+#    exception e
 #    {
 #        "fail:*" =>
 #            # nop
@@ -858,13 +902,30 @@ Local.syncthread(l: self ref Local)
         <-l.sync;
     }
 }
-Local.sendmsg(l: self ref Local, n: Node, msg: ref Tmsg): chan of ref Rmsg
+Local.sendtmsg(l: self ref Local, n: ref Node, msg: ref Tmsg): chan of ref Rmsg
 {
     ch := chan of ref Rmsg;
-    l.callbacks = lists->append(l.callbacks, (msg.uid, ch));
+    # send some uid to the waiting thread
+
+    l.callbacks.insert(msg.uid.text(), ch);
+
     buf := msg.pack();
-    sys->write(l.conn.dfd, buf, len buf);
+    (err, c) := sys->dial(n.addr, l.node.addr);
+    if (err != 0)
+    {
+        l.callbacks.delete(msg.uid.text());
+        return nil;
+    }
+    sys->write(c.dfd, buf, len buf);
     return ch;
+}
+Local.sendrmsg(l: self ref Local, n: ref Node, msg: ref Rmsg)
+{
+    buf := msg.pack();
+    (err, c) := sys->dial(n.addr, l.node.addr);
+    if (err != 0)
+        return;
+    sys->write(c.dfd, buf, len buf);
 }
 Local.destroy(l: self ref Local)
 {
@@ -874,13 +935,66 @@ Local.destroy(l: self ref Local)
     killpid(l.syncpid);
 }
 
+DistComp: adt {
+    localid: Key;
+    gt: fn(nil: self ref DistComp, n1, n2: ref Node): int;
+};
+DistComp.gt(dc: self ref DistComp, n1, n2: ref Node): int
+{
+    return dist(n2.id, dc.localid).gt(dist(n1.id, dc.localid));
+}
+Local.dhtfindnode(l: self ref Local, id: Key): ref Node
+{
+    nodes := l.contacts.findclosenodes(id);
+    # endless loop till we find the node
+    while (1)
+    {
+        newnodes := array [0] of Node;
+        answer: ref Rmsg;
+        for (i := 0; i < len nodes; i++)
+        {
+            msg := ref Tmsg.FindNode(Key.generate(), l.node.id,
+                nodes[i].id, id);
+            ch := l.sendtmsg(ref nodes[i], msg);
+            spawn findnode(l, ref nodes[i], ch, msg.uid);
+            # wait for answer
+            answer = <-ch;
+            if (answer != nil)
+                pick m := answer {
+                    FindNode =>
+                        newnewnodes := array [len newnodes + len m.nodes] of Node;
+                        newnewnodes[:] = newnodes[:];
+                        newnewnodes[len newnodes:] = m.nodes[:];
+                        newnodes = newnewnodes;
+                }
+        }
+
+        sortnodes := array [len newnodes] of ref Node;
+        for (i = 0; i < len newnodes; i++)
+            sortnodes[i] = ref newnodes[i];
+        sort->sort(ref DistComp(id), sortnodes);
+        for (i = 0; i < len newnodes; i++)
+            newnodes[i] = *sortnodes[i];
+
+        if (len newnodes < K)
+            nodes = newnodes[:];
+        else 
+            nodes = newnodes[:K];
+
+        if (len nodes == 0)
+            return nil;
+        if (nodes[0].id.eq(id))
+            return ref nodes[0];
+    }
+}
+
 # Callbacks
 timer(ch: chan of int, timeout: int)
 {
     sys->sleep(timeout);
     ch <-= 1;
 }
-replacefirstnode(c: ref Contacts, toadd: Node, pingnode: Node, ch: chan of ref Rmsg)
+replacefirstnode(c: ref Contacts, toadd: Node, pingnode: Node, ch: chan of ref Rmsg, uid: Key)
 {
     answer: ref Rmsg;
     killerch := chan of int;
@@ -900,6 +1014,28 @@ replacefirstnode(c: ref Contacts, toadd: Node, pingnode: Node, ch: chan of ref R
             c.removecontact(pingnode.id);
             c.addcontact(ref toadd);
     }
+    c.local.callbacks.delete(uid.text());
+}
+findnode(l: ref Local, targetnode: ref Node, ch: chan of ref Rmsg, uid: Key)
+{
+    answer: ref Rmsg;
+    killerch := chan of int;
+    spawn timer(killerch, 2000);
+    alt {
+        answer = <-ch =>
+            pick m := answer {
+                FindNode =>
+                    if (!m.senderID.eq(targetnode.id))
+                        break; # TODO: bad thing also
+                    ch <-= m;
+                * =>
+                    # TODO: bad thing!
+                    ch <-= nil;
+            }
+        <-killerch =>
+            ch <-= nil;
+    }
+    l.callbacks.delete(uid.text());
 }
 
 start(localaddr: string, bootstrap: ref Node, id: Key): ref Local
@@ -916,9 +1052,12 @@ start(localaddr: string, bootstrap: ref Node, id: Key): ref Local
     (err, c) := sys->announce(localaddr);
     if (err != 0)
         return nil;
+    sys->fprint(c.cfd, "headers");
 
-    store: list of (Key, array of byte, Daytime->Tm);
-    server := ref Local(node, contacts, store, nil,
+    ch := chan of ref Rmsg;
+    storeitem := ref StoreItem(array [0] of byte, 0);
+    store := hashtable->new(STORESIZE, storeitem);
+    server := ref Local(node, contacts, store, hashtable->new(CALLBACKSIZE, ch),
         0, 0, 0, c, chan of int);
 
     server.contacts.local = server;
