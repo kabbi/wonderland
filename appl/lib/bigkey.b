@@ -39,6 +39,13 @@ Key.text(k: self Key): string
 {
     return sys->sprint("key(%s)", base16->enc(k.data));
 }
+Key.parse(str: string): ref Key
+{
+    if (len str != BB * 2)
+        return nil;
+    data := base16->dec(str);
+    return ref Key(data);
+}
 Key.generate(): Key
 {
     # TODO: replace NotQuiteRandom with ReallyRandom
