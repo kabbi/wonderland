@@ -51,14 +51,16 @@ dist(k1, k2: Key): Key
     return r;
 }
 
-initlocal(verbose: int): ref Local
+initlocal(addr: string, verbose: int): ref Local
 {
     port := random->randomint(random->NotQuiteRandom);
     port &= 16rFFFF; # IP port range
     port %= 100; # our port range
     port += 12000;
+    if (addr == "")
+        addr = "udp!127.0.0.1!" + string port;
 
-    l := dht->start("udp!127.0.0.1!" + string port, ref Node(Key.generate(),
+    l := dht->start(addr, ref Node(Key.generate(),
         "nil", 0), Key.generate());
     if (l == nil)
     {
@@ -428,7 +430,7 @@ randompackrmsgtest()
 
 starttest()
 {
-    local = initlocal(0);
+    local = initlocal("", 0);
     key1 := addrandom(1);
     key2 := addrandom(1);
     addnode(key1, 1);
@@ -473,9 +475,9 @@ parsenode(args: list of string): ref Node
     rtt := int hd args;
     return ref Node(*key, addr, rtt);
 }
-interactivetest()
+interactivetest(addr: string)
 {
-    local = initlocal(1);
+    local = initlocal(addr, 1);
     stdin := sys->fildes(0);
     print();
     while (1)
@@ -596,8 +598,15 @@ init(nil: ref Draw->Context, args: list of string)
         badmodule(Bigkey->PATH);
     bigkey->init();
 
-    if (tl args != nil && hd (tl args) == "-i")
-        interactivetest();
+    args = tl args;
+    if (tl args == nil)
+        starttest();
+
+    addr := hd args;
+    args = tl args;
+
+    if (args != nil && hd args == "-i")
+        interactivetest(addr);
     else
         starttest();
 
