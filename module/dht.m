@@ -58,6 +58,7 @@ Dht: module
 	# DHT message handlers
 	Tmsg: adt {
 		uid: Key;
+		remoteaddr: string;
 		senderID: Key;
 		targetID: Key;
 		pick {
@@ -84,6 +85,7 @@ Dht: module
 
 	Rmsg: adt {
 		uid: Key;
+		remoteaddr: string;
 		senderID: Key;
 		targetID: Key;
 		pick {
@@ -150,6 +152,9 @@ Dht: module
 		dhtfindnode: fn(nil: self ref Local, id: Key): ref Node;
 		#dhtfindvalue: fn(nil: self ref Local, id: Key): array of byte;
 		#dhtstore: fn(nil: self ref Local, data: array of byte): int;
+		# returns the rtt, or -1 if node is not reachable
+		# raises exception if node is not found (??)
+		dhtping: fn(nil: self ref Local, id: Key): int;
 
 		# private data and methods
 		callbacks: ref HashTable[chan of ref Rmsg];
@@ -160,8 +165,8 @@ Dht: module
 		# do some periodic processing
 		process: fn(nil: self ref Local);
 		# process some message
-		processrmsg: fn(nil: self ref Local, buf: array of byte, remoteaddr: string);
-		processtmsg: fn(nil: self ref Local, buf: array of byte, remoteaddr: string);
+		processrmsg: fn(nil: self ref Local, buf: array of byte);
+		processtmsg: fn(nil: self ref Local, buf: array of byte);
 		# send the message and setup callback with given channel
 		sendtmsg: fn(nil: self ref Local, n: ref Node, msg: ref Tmsg): chan of ref Rmsg;
 		# same as above, but without callbacks

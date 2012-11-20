@@ -18,6 +18,8 @@ include "dht.m";
     Node,Bucket,Contacts,Local,K,BB,B,
     MAXRPC,Rmsg,Tmsg: import dht;
 
+DEFADDR: con "udp!127.0.0.1!10000";
+
 dhttest: module {
     init: fn(nil: ref Draw->Context, argv: list of string);
 };
@@ -51,7 +53,12 @@ dist(k1, k2: Key): Key
 
 initlocal(verbose: int): ref Local
 {
-    l := dht->start("udp!127.0.0.1!1234", ref Node(Key.generate(),
+    port := random->randomint(random->NotQuiteRandom);
+    port &= 16rFFFF; # IP port range
+    port %= 100; # our port range
+    port += 12000;
+
+    l := dht->start("udp!127.0.0.1!" + string port, ref Node(Key.generate(),
         "nil", 0), Key.generate());
     if (l == nil)
     {
@@ -59,7 +66,7 @@ initlocal(verbose: int): ref Local
         raise "fail:failed to start server";
     }
     if (verbose)
-        sys->print("started Dht, local id %s\n", l.node.id.text());
+        sys->print("started Dht, local node %s\n", (ref l.node).text());
     return l;
 }
 
@@ -94,7 +101,7 @@ addnode(key: Key, verbose: int)
 addrandom(verbose: int): Key
 {
     key := Key.generate();
-    local.contacts.addcontact(ref Node(key, "random", 0));
+    local.contacts.addcontact(ref Node(key, DEFADDR, 0));
     if (verbose)
         sys->print("Added key with id:%s\n", key.text());
     return key;
@@ -156,24 +163,25 @@ randomtmsg(): ref Tmsg
     msgtype = msgtype % 4;
 
     uid := Key.generate();
+    remoteaddr := "nil";
     senderID := Key.generate();
     targetID := Key.generate();
 
     case msgtype {
         0 =>
-            return ref Tmsg.Ping(uid, senderID, targetID);
+            return ref Tmsg.Ping(uid, remoteaddr, senderID, targetID);
         1 =>
             key := Key.generate();
             l := random->randomint(random->NotQuiteRandom) & 16rFF;
             data := random->randombuf(random->NotQuiteRandom, l);
             ask := random->randomint(random->NotQuiteRandom) & 16rFF;
-            return ref Tmsg.Store(uid, senderID, targetID, key, data, ask);
+            return ref Tmsg.Store(uid, remoteaddr, senderID, targetID, key, data, ask);
         2 =>
             key := Key.generate();
-            return ref Tmsg.FindNode(uid, senderID, targetID, key);
+            return ref Tmsg.FindNode(uid, remoteaddr, senderID, targetID, key);
         3 =>
             key := Key.generate();
-            return ref Tmsg.FindValue(uid, senderID, targetID, key);
+            return ref Tmsg.FindValue(uid, remoteaddr, senderID, targetID, key);
     }
 
     return nil;
@@ -184,22 +192,23 @@ randomrmsg(): ref Rmsg
     msgtype = msgtype % 4;
 
     uid := Key.generate();
+    remoteaddr := "nil";
     senderID := Key.generate();
     targetID := Key.generate();
 
     case msgtype {
         0 =>
-            return ref Rmsg.Ping(uid, senderID, targetID);
+            return ref Rmsg.Ping(uid, remoteaddr, senderID, targetID);
         1 =>
             result := random->randomint(random->NotQuiteRandom) & 16rFF;
-            return ref Rmsg.Store(uid, senderID, targetID, result);
+            return ref Rmsg.Store(uid, remoteaddr, senderID, targetID, result);
         2 =>
             l := random->randomint(random->NotQuiteRandom) & 16rFF;
             l = l % (K * 2);
             nodes := array [l] of Node;
             for (i := 0; i < l; i++)
                 nodes[i] = Node(Key.generate(), "randomnode", 123);
-            return ref Rmsg.FindNode(uid, senderID, targetID, nodes);
+            return ref Rmsg.FindNode(uid, remoteaddr, senderID, targetID, nodes);
         3 =>
             result := random->randomint(random->NotQuiteRandom) & 16rFF;
             l := random->randomint(random->NotQuiteRandom) & 16rFF;
@@ -209,7 +218,7 @@ randomrmsg(): ref Rmsg
                 nodes[i] = Node(Key.generate(), "randomnode", 123);
             l = random->randomint(random->NotQuiteRandom) & 16rFF;
             data := random->randombuf(random->NotQuiteRandom, l);
-            return ref Rmsg.FindValue(uid, senderID, targetID, result, nodes, data);
+            return ref Rmsg.FindValue(uid, remoteaddr, senderID, targetID, result, nodes, data);
     }
 
     return nil;
@@ -435,8 +444,12 @@ starttest()
         sys->print("Deletion test failed!\n");
         raise "test fail:deletion";
     }
-    while(1)
-        sequentialtest(1);
+    for (i = 0; i < 100000; i++)
+    {
+        randompacktmsgtest();
+        randompackrmsgtest();
+        randomunpacktest();
+    }
 }
 
 parsenode(args: list of string): ref Node
@@ -462,7 +475,7 @@ parsenode(args: list of string): ref Node
 }
 interactivetest()
 {
-    local = initlocal(0);
+    local = initlocal(1);
     stdin := sys->fildes(0);
     print();
     while (1)
@@ -506,13 +519,26 @@ interactivetest()
                     args = tl args;
                     node := parsenode(args);
                     local.contacts.addcontact(node);
-                    sys->print("Node %s added!\n", node.text());
+                    sys->print("%s added!\n", node.text());
                 "delcontact" =>
+                    if (tl args == nil)
+                        raise "fail:bad args";
                     key := Key.parse(hd (tl args));
                     if (key == nil)
                         raise "fail:bad key";
                     local.contacts.removecontact(*key);
                     sys->print("Node with key %s removed!\n", (*key).text());
+                "ping" =>
+                    if (tl args == nil)
+                        raise "fail:bad args";
+                    key := Key.parse(hd (tl args));
+                    if (key == nil)
+                        raise "fail:bad key";
+                    rtt := local.dhtping(*key);
+                    if (rtt > 0)
+                        sys->print("Ping success!\nGot answer in %d ms\n", rtt);
+                    else
+                        sys->print("No answer!\n");
                 "print" =>
                     print();
                 "clear" =>
@@ -544,6 +570,8 @@ interactivetest()
         {
             "fail:*" =>
                 sys->print("Command failed: %s\n", e[5:]);
+            "test failed:*" =>
+                sys->print("Test failed: %s\n", e[12:]);
         }
     }
 }

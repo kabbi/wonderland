@@ -36,7 +36,7 @@ KEY: con BB+LEN;
 
 STORESIZE: con 13;
 CALLBACKSIZE: con 13;
-H: con BIT32SZ+BIT8SZ+KEY+KEY+KEY;  # minimum header length: size[4] type uid[20] sender[20] target[20]
+H: con BIT32SZ+BIT8SZ+KEY+LEN+KEY+KEY;  # minimum header length: size[4] type uid[20] remoteaddr[4+] sender[20] target[20]
 
 # minimum packet sizes
 hdrlen := array[Tmax] of
@@ -94,6 +94,7 @@ init()
     if (sort == nil)
         badmodule(Sort->PATH);
     bigkey->init();
+    ip->init();
 }
 
 abs(a: int): int
@@ -257,6 +258,7 @@ Tmsg.packedsize(t: self ref Tmsg): int
     if(mtype <= 0)
         return 0;
     ml := hdrlen[mtype];
+    ml += len array of byte t.remoteaddr;
     pick m := t {
     Ping =>
         # no dynamic data
@@ -278,6 +280,7 @@ Tmsg.pack(t: self ref Tmsg): array of byte
     o = p32(d, o, ds);
     d[o++] = byte ttag2type[tagof t];
     o = pkey(d, o, t.uid);
+    o = pstring(d, o, t.remoteaddr);
     o = pkey(d, o, t.senderID);
     o = pkey(d, o, t.targetID);
 
@@ -317,7 +320,9 @@ Tmsg.unpack(f: array of byte): (int, ref Tmsg)
 
     o := BIT32SZ + 1; # offset
     uid, senderID, targetID: Key;
+    remoteaddr: string;
     (uid, o) = gkey(f, o);
+    (remoteaddr, o) = gstring(f, o);
     (senderID, o) = gkey(f, o);
     (targetID, o) = gkey(f, o);
 
@@ -328,7 +333,7 @@ Tmsg.unpack(f: array of byte): (int, ref Tmsg)
     * =>
         raise "fail: Tmsg.unpack: bad message type";
     TPing =>
-        return (H, ref Tmsg.Ping(uid, senderID, targetID));
+        return (o, ref Tmsg.Ping(uid, remoteaddr, senderID, targetID));
     TStore =>
         key: Key;
         (key, o) = gkey(f, o);
@@ -336,15 +341,15 @@ Tmsg.unpack(f: array of byte): (int, ref Tmsg)
         (data, o) = garray(f, o);
         ask := g32(f, o);
         o += BIT32SZ;
-        return (o, ref Tmsg.Store(uid, senderID, targetID, key, data, ask));
+        return (o, ref Tmsg.Store(uid, remoteaddr, senderID, targetID, key, data, ask));
     TFindNode =>
         key: Key;
         (key, o) = gkey(f, o);
-        return (o, ref Tmsg.FindNode(uid, senderID, targetID, key));
+        return (o, ref Tmsg.FindNode(uid, remoteaddr, senderID, targetID, key));
     TFindValue =>
         key: Key;
         (key, o) = gkey(f, o);
-        return (o, ref Tmsg.FindValue(uid, senderID, targetID, key));
+        return (o, ref Tmsg.FindValue(uid, remoteaddr, senderID, targetID, key));
     }
     raise "fail: Tmsg.unpack: malformed packet";
 }
@@ -358,7 +363,7 @@ tagof Tmsg.FindValue => "FindValue"
 
 Tmsg.text(t: self ref Tmsg): string
 {
-    s := sys->sprint("Tmsg.%s(%s,%s->%s,", tmsgname[tagof t], t.uid.text(), t.senderID.text(), t.targetID.text());
+    s := sys->sprint("Tmsg.%s(%s,%s,%s->%s,", tmsgname[tagof t], t.uid.text(), t.remoteaddr, t.senderID.text(), t.targetID.text());
     pick m:= t {
     * =>
         return s + ",ILLEGAL)";
@@ -399,6 +404,7 @@ Rmsg.packedsize(r: self ref Rmsg): int
     if(mtype <= 0)
         return 0;
     ml := hdrlen[mtype];
+    ml += len array of byte r.remoteaddr;
     pick m := r {
     Ping =>
         # no dynamic data
@@ -431,6 +437,7 @@ Rmsg.pack(r: self ref Rmsg): array of byte
     o = p32(d, o, ds);
     d[o++] = byte rtag2type[tagof r];
     o = pkey(d, o, r.uid);
+    o = pstring(d, o, r.remoteaddr);
     o = pkey(d, o, r.senderID);
     o = pkey(d, o, r.targetID);
 
@@ -470,7 +477,9 @@ Rmsg.unpack(f: array of byte): (int, ref Rmsg)
 
     o := BIT32SZ + 1; # offset
     uid, senderID, targetID: Key;
+    remoteaddr: string;
     (uid, o) = gkey(f, o);
+    (remoteaddr, o) = gstring(f, o);
     (senderID, o) = gkey(f, o);
     (targetID, o) = gkey(f, o);
 
@@ -481,14 +490,14 @@ Rmsg.unpack(f: array of byte): (int, ref Rmsg)
     * =>
         raise "fail: Rmsg.unpack: bad message type";
     RPing =>
-        return (H, ref Rmsg.Ping(uid, senderID, targetID));
+        return (o, ref Rmsg.Ping(uid, remoteaddr, senderID, targetID));
     RStore =>
         result := g32(f, o);
-        return (o+BIT32SZ, ref Rmsg.Store(uid, senderID, targetID, result));
+        return (o+BIT32SZ, ref Rmsg.Store(uid, remoteaddr, senderID, targetID, result));
     RFindNode =>
         nodes: array of Node;
         (nodes, o) = gnodes(f, o);
-        return (o, ref Rmsg.FindNode(uid, senderID, targetID, nodes));
+        return (o, ref Rmsg.FindNode(uid, remoteaddr, senderID, targetID, nodes));
     RFindValue =>
         # implement reading!
         result := g32(f, o);
@@ -497,7 +506,7 @@ Rmsg.unpack(f: array of byte): (int, ref Rmsg)
         (nodes, o) = gnodes(f, o);
         value: array of byte;
         (value, o) = garray(f, o);
-        return (o, ref Rmsg.FindValue(uid, senderID, targetID, result, nodes, value));
+        return (o, ref Rmsg.FindValue(uid, remoteaddr, senderID, targetID, result, nodes, value));
     }
     raise "fail: Rmsg.unpack: malformed packet";
 }
@@ -511,7 +520,7 @@ tagof Rmsg.FindValue => "FindValue"
 
 Rmsg.text(r: self ref Rmsg): string
 {
-    s := sys->sprint("Rmsg.%s(%s,%s->%s,", Rmsgname[tagof r], r.uid.text(), r.senderID.text(), r.targetID.text());
+    s := sys->sprint("Rmsg.%s(%s,%s,%s->%s,", Rmsgname[tagof r], r.uid.text(), r.remoteaddr, r.senderID.text(), r.targetID.text());
     pick m:= r {
     * =>
         return s + ",ILLEGAL)";
@@ -655,11 +664,12 @@ Contacts.addcontact(c: self ref Contacts, n: ref Node)
             }
             else
             {
-                msg := ref Tmsg.Ping(Key.generate(),
-                    c.local.node.id, c.buckets[bucketInd].nodes[0].id);
-                ch := c.local.sendtmsg(ref c.buckets[bucketInd].nodes[0], msg);
+                node := ref c.buckets[bucketInd].nodes[0];
+                msg := ref Tmsg.Ping(Key.generate(), node.addr,
+                    c.local.node.id, node.id);
+                ch := c.local.sendtmsg(node, msg);
                 if (ch != nil)
-                    spawn replacefirstnode(c, *n, c.buckets[bucketInd].nodes[0], ch, msg.uid);
+                    spawn replacefirstnode(c, *n, *node, ch, msg.uid);
                 c.local.sync <-= 1;
             }
         EAlreadyPresent =>
@@ -797,47 +807,44 @@ Local.process(l: self ref Local)
     l.processpid = sys->pctl(0, nil);
 
     # reading incoming packets
-    buffer := array [MAXRPC + Udphdrlen] of byte;
+    buffer := array [MAXRPC] of byte;
     l.conn.dfd = sys->open(l.conn.dir + "/data", Sys->OREAD);
     while (1)
     {
         bytesread := sys->read(l.conn.dfd, buffer, len buffer);
         if (bytesread <= 0)
             raise sys->sprint("fail:Local.process:read error:%r");
-        if (bytesread < H + Udphdrlen)
+        if (bytesread < H)
             continue;
 
-        hdr := Udphdr.unpack(buffer[:Udphdrlen], Udphdrlen);
-        remoteaddr := "udp!" + hdr.raddr.text() + "!" + string hdr.rport;
-
-        msgtype := int buffer[4 + Udphdrlen];
+        msgtype := int buffer[4];
         if (msgtype & 1)
-            spawn l.processrmsg(buffer[Udphdrlen:], remoteaddr);
+            spawn l.processrmsg(buffer);
         else
-            spawn l.processtmsg(buffer[Udphdrlen:], remoteaddr);
+            spawn l.processtmsg(buffer);
     }
 }
-Local.processtmsg(l: self ref Local, buf: array of byte, remoteaddr: string)
+Local.processtmsg(l: self ref Local, buf: array of byte)
 {
     {
         (nil, msg) := Tmsg.unpack(buf);
         if (!msg.targetID.eq(l.node.id) || msg.senderID.eq(l.node.id))
             return;
 
-        sender := ref Node(msg.senderID, remoteaddr, 0);
+        sender := ref Node(msg.senderID, msg.remoteaddr, 0);
         l.contacts.addcontact(sender);
 
         pick m := msg {
             Ping =>
-                answer := ref Rmsg.Ping(m.uid, l.node.id, m.senderID);
+                answer := ref Rmsg.Ping(m.uid, l.node.addr, l.node.id, m.senderID);
                 l.sendrmsg(sender, answer);
             Store =>
                 l.store.insert(m.key.text(), ref StoreItem(m.data, daytime->now()));
-                answer := ref Rmsg.Store(m.uid, l.node.id, m.senderID, 42);
+                answer := ref Rmsg.Store(m.uid, l.node.addr, l.node.id, m.senderID, 42);
                 l.sendrmsg(sender, answer);
             FindNode =>
                 nodes := l.contacts.findclosenodes(m.key);
-                answer := ref Rmsg.FindNode(m.uid, l.node.id, m.senderID, nodes);
+                answer := ref Rmsg.FindNode(m.uid, l.node.addr, l.node.id, m.senderID, nodes);
                 l.sendrmsg(sender, answer);
             FindValue =>
                 result: int;
@@ -854,7 +861,7 @@ Local.processtmsg(l: self ref Local, buf: array of byte, remoteaddr: string)
                     result = FVValue;
                     value = item.data;
                 }
-                answer := ref Rmsg.FindValue(m.uid, l.node.id, m.senderID, result, nodes, value);
+                answer := ref Rmsg.FindValue(m.uid, l.node.addr, l.node.id, m.senderID, result, nodes, value);
                 l.sendrmsg(sender, answer);
         }
     }
@@ -864,7 +871,7 @@ Local.processtmsg(l: self ref Local, buf: array of byte, remoteaddr: string)
 #            # nop
 #    }
 }
-Local.processrmsg(l: self ref Local, buf: array of byte, remoteaddr: string)
+Local.processrmsg(l: self ref Local, buf: array of byte)
 {
     {
         (nil, msg) := Rmsg.unpack(buf);
@@ -905,26 +912,22 @@ Local.syncthread(l: self ref Local)
 Local.sendtmsg(l: self ref Local, n: ref Node, msg: ref Tmsg): chan of ref Rmsg
 {
     ch := chan of ref Rmsg;
-    # send some uid to the waiting thread
-
-    l.callbacks.insert(msg.uid.text(), ch);
 
     buf := msg.pack();
-    (err, c) := sys->dial(n.addr, l.node.addr);
+    (err, c) := sys->dial(n.addr, "");
     if (err != 0)
-    {
-        l.callbacks.delete(msg.uid.text());
-        return nil;
-    }
+        raise sys->sprint("fail:sendtmsg:send error:%r");
+
+    l.callbacks.insert(msg.uid.text(), ch);
     sys->write(c.dfd, buf, len buf);
     return ch;
 }
 Local.sendrmsg(l: self ref Local, n: ref Node, msg: ref Rmsg)
 {
     buf := msg.pack();
-    (err, c) := sys->dial(n.addr, l.node.addr);
+    (err, c) := sys->dial(n.addr, "");
     if (err != 0)
-        return;
+        raise sys->sprint("fail:senrdmsg:send error:%r");
     sys->write(c.dfd, buf, len buf);
 }
 Local.destroy(l: self ref Local)
@@ -953,7 +956,7 @@ Local.dhtfindnode(l: self ref Local, id: Key): ref Node
         answer: ref Rmsg;
         for (i := 0; i < len nodes; i++)
         {
-            msg := ref Tmsg.FindNode(Key.generate(), l.node.id,
+            msg := ref Tmsg.FindNode(Key.generate(), l.node.addr, l.node.id,
                 nodes[i].id, id);
             ch := l.sendtmsg(ref nodes[i], msg);
             spawn findnode(l, ref nodes[i], ch, msg.uid);
@@ -986,6 +989,37 @@ Local.dhtfindnode(l: self ref Local, id: Key): ref Node
         if (nodes[0].id.eq(id))
             return ref nodes[0];
     }
+}
+Local.dhtping(l: self ref Local, id: Key): int
+{
+    node := l.contacts.getnode(id);
+    if (node == nil)
+        raise "fail:dhtping:ping node not found";
+
+    msg := ref Tmsg.Ping(Key.generate(), l.node.addr, l.node.id, id);
+    ch := l.sendtmsg(node, msg);
+
+    sendtime := sys->millisec();
+
+    killerch := chan of int;
+    spawn timer(killerch, 1000);
+
+    result := -1;
+    alt {
+        answer := <-ch =>
+            pick m := answer {
+                Ping =>
+                    if (!m.senderID.eq(id))
+                        break; # TODO: bad thing also
+                    result = sys->millisec() - sendtime;
+                * =>
+                    # TODO: bad thing!
+            }
+        <-killerch =>
+            # nop
+    }
+    l.callbacks.delete(msg.uid.text());
+    return result;
 }
 
 # Callbacks
@@ -1052,7 +1086,7 @@ start(localaddr: string, bootstrap: ref Node, id: Key): ref Local
     (err, c) := sys->announce(localaddr);
     if (err != 0)
         return nil;
-    sys->fprint(c.cfd, "headers");
+    #sys->fprint(c.cfd, "headers");
 
     ch := chan of ref Rmsg;
     storeitem := ref StoreItem(array [0] of byte, 0);
