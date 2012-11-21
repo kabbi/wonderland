@@ -512,6 +512,7 @@ interactivetest(addr: string)
                     sys->print("\trandomunpackmsgtest\n");
                     sys->print("\tpackunpackmsgtest\n");
                     sys->print("Others:\n");
+                    sys->print("\tlog\n");
                     sys->print("\texit\n");
                     sys->print("\thelp\n");
                     sys->print("\t?\n");
@@ -564,6 +565,12 @@ interactivetest(addr: string)
                 "packunpackmsgtest" =>
                     randompackrmsgtest();
                     randompacktmsgtest();
+                "log" =>
+                    args = tl args;
+                    if (args == nil)
+                        raise "fail:bad args";
+                    fd := sys->create(hd args, Sys->OWRITE, 8r777);
+                    local.setlogfd(fd);
                 * =>
                     raise "fail:no such command!";
             }

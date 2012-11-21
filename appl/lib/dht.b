@@ -672,6 +672,8 @@ Contacts.addcontact(c: self ref Contacts, n: ref Node)
     if (n.id.eq(c.local.node.id))
         return;
 
+    c.local.logevent("addcontact", "Adding contact " + n.text());
+
     <-c.local.sync;
     bucketInd := c.findbucket(n.id);
     #TODO: Update lastaccess time?
@@ -679,8 +681,10 @@ Contacts.addcontact(c: self ref Contacts, n: ref Node)
     {
         * =>
             #Success, nothing to do here.
+            c.local.logevent("addcontact", "Added successfully");
             c.local.sync <-= 1;
         EBucketFull => 
+            c.local.logevent("addcontact", "Bucket full, trying to split");
             #TODO: Substitute to section 2.2 (see l.152 of p2plib)
             if (c.buckets[bucketInd].isinrange(c.local.node.id))
             {
@@ -699,6 +703,7 @@ Contacts.addcontact(c: self ref Contacts, n: ref Node)
                 c.local.sync <-= 1;
             }
         EAlreadyPresent =>
+            c.local.logevent("addcontact", "Already present, moving to top");
             c.local.sync <-= 1;
             c.removecontact(n.id);
             c.addcontact(n);
@@ -706,6 +711,7 @@ Contacts.addcontact(c: self ref Contacts, n: ref Node)
 }
 Contacts.split(c: self ref Contacts, idx: int)
 {
+    c.local.logevent("split", "Splitting bicket " + string idx);
     #TODO: Update lastaccess time?
     src := c.buckets[idx];
     mid := src.maxrange.subtract(src.maxrange.subtract(src.minrange).halve()); # m = r - ((r - l) / 2)
@@ -729,6 +735,7 @@ Contacts.split(c: self ref Contacts, idx: int)
 }
 Contacts.removecontact(c: self ref Contacts, id: Key)
 {
+    c.local.logevent("removecontact", "Removing contact " + id.text());
     <-c.local.sync;
     trgbucket := c.buckets[c.findbucket(id)];
     idx := trgbucket.findnode(id);
@@ -792,6 +799,7 @@ Contacts.getnode(c: self ref Contacts, id: Key): ref Node
 }
 Contacts.findclosenodes(c: self ref Contacts, id: Key): array of Node
 {
+    c.local.logevent("findclosenodes", "Findclosenodes called");
     bucketIdx := c.findbucket(id);
     nodes := c.buckets[bucketIdx].getnodes(K);
     (i, mod, sign) := (1, 1, 1);
@@ -812,6 +820,7 @@ Contacts.findclosenodes(c: self ref Contacts, id: Key): array of Node
         i += mod * sign;
             ablemove := (bucketIdx + abs(i) < len c.buckets) || (bucketIdx - abs(i) >= 0);
     }
+    c.local.logevent("findclosenodes", "Returned " + string len nodes + " nodes");
     return nodes;
 }
 Contacts.print(c: self ref Contacts, tabs: int)
@@ -838,6 +847,8 @@ Local.process(l: self ref Local)
     while (1)
     {
         bytesread := sys->read(l.conn.dfd, buffer, len buffer);
+        l.logevent("process", "New incoming message");
+
         if (bytesread <= 0)
             raise sys->sprint("fail:Local.process:read error:%r");
         if (bytesread < H)
@@ -854,8 +865,13 @@ Local.processtmsg(l: self ref Local, buf: array of byte)
 {
     {
         (nil, msg) := Tmsg.unpack(buf);
+        l.logevent("processtmsg", "Incoming Tmsg received");
+        l.logevent("processtmsg", "Dump: " + msg.text());
         if (!msg.targetID.eq(l.node.id) || msg.senderID.eq(l.node.id))
+        {
+            l.logevent("processtmsg", "The message is discarder, sender or target id error");
             return;
+        }
 
         sender := ref Node(msg.senderID, msg.remoteaddr, 0);
         l.contacts.addcontact(sender);
@@ -901,11 +917,17 @@ Local.processrmsg(l: self ref Local, buf: array of byte)
 {
     {
         (nil, msg) := Rmsg.unpack(buf);
+        l.logevent("processrmsg", "Incoming Rmsg received.");
+        l.logevent("processrmsg", "Dump: " + msg.text());
         if (!msg.targetID.eq(l.node.id) || msg.senderID.eq(l.node.id))
+        {
+            l.logevent("processrmsg", "The message is discarder, sender or target id error");
             return;
+        }
 
         ch: chan of ref Rmsg;
         ch = l.callbacks.find(msg.uid.text());
+        l.logevent("processrmsg", sys->sprint("Sending message to the callback, success: %d", ch == nil));
         if (ch != nil)
             ch <-= msg;
     }
@@ -937,6 +959,8 @@ Local.syncthread(l: self ref Local)
 }
 Local.sendtmsg(l: self ref Local, n: ref Node, msg: ref Tmsg): chan of ref Rmsg
 {
+    l.logevent("sendtmsg", "Sending message to " + n.text());
+    l.logevent("sendtmsg", "Dump: " + msg.text());
     ch := chan of ref Rmsg;
 
     buf := msg.pack();
@@ -950,6 +974,9 @@ Local.sendtmsg(l: self ref Local, n: ref Node, msg: ref Tmsg): chan of ref Rmsg
 }
 Local.sendrmsg(l: self ref Local, n: ref Node, msg: ref Rmsg)
 {
+    l.logevent("sendrmsg", "Sending message to " + n.text());
+    l.logevent("sendrmsg", "Dump: " + msg.text());
+
     buf := msg.pack();
     (err, c) := sys->dial(n.addr, "");
     if (err != 0)
@@ -959,9 +986,21 @@ Local.sendrmsg(l: self ref Local, n: ref Node, msg: ref Rmsg)
 Local.destroy(l: self ref Local)
 {
     # just kill everybody
+    l.logevent("destroy", "Quitting...");
     killpid(l.processpid);
     killpid(l.timerpid);
     killpid(l.syncpid);
+}
+
+Local.setlogfd(l: self ref Local, fd: ref Sys->FD)
+{
+    l.logfd = fd;
+}
+Local.logevent(l: self ref Local, source: string, msg: string)
+{
+    if (l.logfd != nil)
+        sys->fprint(l.logfd, "[%s] %s: %s\n",
+            daytime->text(daytime->local(daytime->now())), source, msg);
 }
 
 DistComp: adt {
@@ -977,6 +1016,8 @@ Local.iterativefindnode(l: self ref Local, id: Key, nodes: array of ref Node): r
 #    - toref(findclosenodes(id)) - if called regularly
 #    - toref(bootstrap array) - if called from bootstrap
 {
+    l.logevent("iterativefindnode", "Started to search for node " + id.text());
+    l.logevent("iterativefindnode", "Starting node array size: " + string len nodes);
     return dhtfindnode(l, id, nodes, hashtable->new(HASHSIZE, ref Key.generate()));
 }
 dhtfindnode(l: ref Local, id: Key, nodes: array of ref Node, asked: ref HashTable[ref Key]): ref Node
@@ -1025,6 +1066,7 @@ Local.dhtping(l: self ref Local, id: Key): int
     if (node == nil)
         raise "fail:dhtping:ping node not found";
 
+    l.logevent("dhtping", "Dht ping called with " + id.text());
     msg := ref Tmsg.Ping(Key.generate(), l.node.addr, l.node.id, id);
     ch := l.sendtmsg(node, msg);
 
@@ -1039,13 +1081,16 @@ Local.dhtping(l: self ref Local, id: Key): int
             pick m := answer {
                 Ping =>
                     if (!m.senderID.eq(id))
-                        break; # TODO: bad thing also
+                    {
+                        l.logevent("dhtping", "Received answer from unexpected node");
+                        break;
+                    }
                     result = sys->millisec() - sendtime;
                 * =>
-                    # TODO: bad thing!
+                    l.logevent("dhtping", "Received answer, but not the desired message format");
             }
         <-killerch =>
-            # nop
+            l.logevent("dhtping", "Waiting timeout");
     }
     l.callbacks.delete(msg.uid.text());
     return result;
@@ -1067,13 +1112,17 @@ replacefirstnode(c: ref Contacts, toadd: Node, pingnode: Node, ch: chan of ref R
             pick m := answer {
                 Ping =>
                     if (!m.senderID.eq(pingnode.id))
-                        break; # TODO: bad thing also
+                    {
+                        c.local.logevent("replacefirstnode", "Received answer from unexpected node");
+                        break;
+                    }
                     c.removecontact(pingnode.id);
                     c.addcontact(ref pingnode);
                 * =>
-                    # TODO: bad thing!
+                    c.local.logevent("replacefirstnode", "Received answer, but not the desired message format");
             }
         <-killerch =>
+            c.local.logevent("replacefirstnode", "Answer not received, killing node");
             c.removecontact(pingnode.id);
             c.addcontact(ref toadd);
     }
@@ -1081,6 +1130,7 @@ replacefirstnode(c: ref Contacts, toadd: Node, pingnode: Node, ch: chan of ref R
 }
 findnode(l: ref Local, targetnode: ref Node, uid: Key, rch: chan of array of ref Node)
 {
+    l.logevent("findnode", "Findnode called, with key " + uid.text());
     msg := ref Tmsg.FindNode(Key.generate(), l.node.addr, l.node.id,
                 targetnode.id, uid);
     ch := l.sendtmsg(targetnode, msg);
@@ -1092,13 +1142,17 @@ findnode(l: ref Local, targetnode: ref Node, uid: Key, rch: chan of array of ref
             pick m := answer {
                 FindNode =>
                     if (!m.senderID.eq(targetnode.id))
-                        break; # TODO: bad thing also
+                    {
+                        l.logevent("findnode", "Received answer from unexpected node");
+                        break;
+                    }
                     rch <-= toref(m.nodes);
                 * =>
-                    # TODO: bad thing!
+                    l.logevent("findnode", "Received answer, but not the desired message format");
                     rch <-= nil;
             }
         <-killerch =>
+            l.logevent("findnode", "Message wait timeout");
             rch <-= nil;
     }
     l.callbacks.delete(uid.text());
@@ -1124,7 +1178,7 @@ start(localaddr: string, bootstrap: ref Node, id: Key): ref Local
     storeitem := ref StoreItem(array [0] of byte, 0);
     store := hashtable->new(STORESIZE, storeitem);
     server := ref Local(node, contacts, store, hashtable->new(CALLBACKSIZE, ch),
-        0, 0, 0, c, chan of int);
+        0, 0, 0, nil, c, chan of int);
 
     server.contacts.local = server;
 

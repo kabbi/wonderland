@@ -155,10 +155,13 @@ Dht: module
 		# returns the rtt, or -1 if node is not reachable
 		# raises exception if node is not found (??)
 		dhtping: fn(nil: self ref Local, id: Key): int;
+		# sets the file descriptor for logs, if nil logging is turned off
+		setlogfd: fn(nil: self ref Local, fd: ref Sys->FD);
 
 		# private data and methods
 		callbacks: ref HashTable[chan of ref Rmsg];
 		timerpid, processpid, syncpid: int;
+		logfd: ref Sys->FD;
 		conn: Sys->Connection;
 		sync: chan of int;
 
@@ -171,6 +174,8 @@ Dht: module
 		sendtmsg: fn(nil: self ref Local, n: ref Node, msg: ref Tmsg): chan of ref Rmsg;
 		# same as above, but without callbacks
 		sendrmsg: fn(nil: self ref Local, n: ref Node, msg: ref Rmsg);
+		# log some data
+		logevent: fn(nil: self ref Local, source: string, msg: string);
 		# fire the event with some interval
 		timer: fn (nil: self ref Local);
 		# the thing that would sync everything
