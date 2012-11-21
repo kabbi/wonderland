@@ -36,6 +36,7 @@ KEY: con BB+LEN;
 
 STORESIZE: con 13;
 CALLBACKSIZE: con 13;
+HASHSIZE: con 13;
 H: con BIT32SZ+BIT8SZ+KEY+LEN+KEY+KEY;  # minimum header length: size[4] type uid[20] remoteaddr[4+] sender[20] target[20]
 
 # minimum packet sizes
@@ -110,6 +111,31 @@ dist(k1, k2: Key): Key
     for (i := 0; i < BB; i++)
         r.data[i] ^= k2.data[i];
     return r;
+}
+findbyid(x: Key, a: array of ref Node): ref Node
+{
+    for (i := 0; i < len a; i++)
+        if (x.eq(a[i].id))
+            return a[i];
+    return nil;
+}
+reaper[T](ch: chan of T, unreaped: int)
+{
+    for (i := 0; i < unreaped; ++i)
+        <- ch;
+}
+toref(a: array of Node): array of ref Node
+{
+    b := array [len a] of ref Node;
+    for (i := 0; i < len a; i++)
+        b[i] = ref a[i];
+    return b;
+}
+min(a: int, b: int): int
+{
+    if (a < b)
+        return a;
+    return b;
 }
 
 pnodes(a: array of byte, o: int, na: array of Node): int
@@ -946,49 +972,52 @@ DistComp.gt(dc: self ref DistComp, n1, n2: ref Node): int
 {
     return dist(n2.id, dc.localid).gt(dist(n1.id, dc.localid));
 }
-Local.dhtfindnode(l: self ref Local, id: Key): ref Node
+Local.iterativefindnode(l: self ref Local, id: Key, nodes: array of ref Node): ref Node
+# nodes - starting array of nodes:
+#    - toref(findclosenodes(id)) - if called regularly
+#    - toref(bootstrap array) - if called from bootstrap
 {
-    nodes := l.contacts.findclosenodes(id);
-    # endless loop till we find the node
-    while (1)
+    return dhtfindnode(l, id, nodes, hashtable->new(HASHSIZE, ref Key.generate()));
+}
+dhtfindnode(l: ref Local, id: Key, nodes: array of ref Node, asked: ref HashTable[ref Key]): ref Node
+{
+    ret := findbyid(id, nodes);
+    if (ret != nil)
+        return ret;
+    sort->sort(ref DistComp(id), nodes); 
+    listench := chan of array of ref Node; 
+
+    pending := 0;
+    nexttoask := 0;
+    while (nexttoask < min(len nodes, ALPHA))
     {
-        newnodes := array [0] of Node;
-        answer: ref Rmsg;
-        for (i := 0; i < len nodes; i++)
-        {
-            msg := ref Tmsg.FindNode(Key.generate(), l.node.addr, l.node.id,
-                nodes[i].id, id);
-            ch := l.sendtmsg(ref nodes[i], msg);
-            spawn findnode(l, ref nodes[i], ch, msg.uid);
-            # wait for answer
-            answer = <-ch;
-            if (answer != nil)
-                pick m := answer {
-                    FindNode =>
-                        newnewnodes := array [len newnodes + len m.nodes] of Node;
-                        newnewnodes[:] = newnodes[:];
-                        newnewnodes[len newnodes:] = m.nodes[:];
-                        newnodes = newnewnodes;
-                }
-        }
-
-        sortnodes := array [len newnodes] of ref Node;
-        for (i = 0; i < len newnodes; i++)
-            sortnodes[i] = ref newnodes[i];
-        sort->sort(ref DistComp(id), sortnodes);
-        for (i = 0; i < len newnodes; i++)
-            newnodes[i] = *sortnodes[i];
-
-        if (len newnodes < K)
-            nodes = newnodes[:];
-        else 
-            nodes = newnodes[:K];
-
-        if (len nodes == 0)
-            return nil;
-        if (nodes[0].id.eq(id))
-            return ref nodes[0];
+        if (asked.find(nodes[nexttoask].id.text()) != nil)
+            continue;
+        asked.insert(nodes[nexttoask].id.text(), ref Key.generate());
+        spawn findnode(l, nodes[nexttoask++], id, listench);
+        ++pending;
     }
+
+    while (pending > 0)
+    {
+        ret = dhtfindnode(l, id, <- listench, asked);
+        --pending;
+        if (ret != nil)
+        {
+            spawn reaper(listench, pending);
+            return ret;
+        }
+        while (asked.find(nodes[nexttoask].id.text()) != nil && nexttoask < len nodes)
+            ++nexttoask;
+        if (nexttoask < len nodes)
+        { 
+            asked.insert(nodes[nexttoask].id.text(), ref Key.generate());
+            spawn findnode(l, nodes[nexttoask++], id, listench);
+            ++pending;
+        }
+    }
+    
+    return nil;
 }
 Local.dhtping(l: self ref Local, id: Key): int
 {
@@ -1050,8 +1079,11 @@ replacefirstnode(c: ref Contacts, toadd: Node, pingnode: Node, ch: chan of ref R
     }
     c.local.callbacks.delete(uid.text());
 }
-findnode(l: ref Local, targetnode: ref Node, ch: chan of ref Rmsg, uid: Key)
+findnode(l: ref Local, targetnode: ref Node, uid: Key, rch: chan of array of ref Node)
 {
+    msg := ref Tmsg.FindNode(Key.generate(), l.node.addr, l.node.id,
+                targetnode.id, uid);
+    ch := l.sendtmsg(targetnode, msg);
     answer: ref Rmsg;
     killerch := chan of int;
     spawn timer(killerch, 2000);
@@ -1061,13 +1093,13 @@ findnode(l: ref Local, targetnode: ref Node, ch: chan of ref Rmsg, uid: Key)
                 FindNode =>
                     if (!m.senderID.eq(targetnode.id))
                         break; # TODO: bad thing also
-                    ch <-= m;
+                    rch <-= toref(m.nodes);
                 * =>
                     # TODO: bad thing!
-                    ch <-= nil;
+                    rch <-= nil;
             }
         <-killerch =>
-            ch <-= nil;
+            rch <-= nil;
     }
     l.callbacks.delete(uid.text());
 }
