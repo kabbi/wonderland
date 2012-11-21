@@ -1018,6 +1018,8 @@ Local.iterativefindnode(l: self ref Local, id: Key, nodes: array of ref Node): r
 {
     l.logevent("iterativefindnode", "Started to search for node " + id.text());
     l.logevent("iterativefindnode", "Starting node array size: " + string len nodes);
+    if (len nodes == 0)
+        nodes = toref(l.contacts.findclosenodes(id));
     return dhtfindnode(l, id, nodes, hashtable->new(HASHSIZE, ref Key.generate()));
 }
 dhtfindnode(l: ref Local, id: Key, nodes: array of ref Node, asked: ref HashTable[ref Key]): ref Node

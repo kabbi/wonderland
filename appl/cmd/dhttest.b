@@ -498,10 +498,12 @@ interactivetest(addr: string)
                 "help" or "?" =>
                     sys->print("Dht module tester program\n");
                     sys->print("Available commands:\n");
+                    sys->print("Dht API methods:\n");
+                    sys->print("\findnode <id>\n");
+                    sys->print("\tping <id>\n");
                     sys->print("Manual contacts manipulation:\n");
                     sys->print("\taddcontact <id> <addr> <rtt>\n");
                     sys->print("\tdelcontact <id>\n");
-                    sys->print("\tping <id>\n");
                     sys->print("\tclear\n");
                     sys->print("\tprint\n");
                     sys->print("Tests:\n");
@@ -518,6 +520,18 @@ interactivetest(addr: string)
                     sys->print("\t?\n");
                 "exit" or "quit" =>
                     return;
+                "findnode" =>
+                    args = tl args;
+                    if (args == nil)
+                        raise "fail:bad args";
+                    key := Key.parse(hd args);
+                    if (key == nil)
+                        raise "fail:bad key";
+                    node := local.iterativefindnode(*key, array [0] of ref Node);
+                    if (node != nil)
+                        sys->print("Node found! %s\n", node.text());
+                    else
+                        sys->print("Nothing was found\n");
                 "addcontact" =>
                     args = tl args;
                     node := parsenode(args);
