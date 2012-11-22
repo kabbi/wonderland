@@ -60,8 +60,7 @@ initlocal(addr: string, verbose: int): ref Local
     if (addr == "")
         addr = "udp!127.0.0.1!" + string port;
 
-    l := dht->start(addr, ref Node(Key.generate(),
-        "nil", 0), Key.generate());
+    l := dht->start(addr, array [0] of ref Node, Key.generate());
     if (l == nil)
     {
         sys->print("failed to start server!\n%r\n");
@@ -477,7 +476,10 @@ parsenode(args: list of string): ref Node
 }
 interactivetest(addr: string)
 {
-    local = initlocal(addr, 1);
+    servers := array [1] of ref Local;
+    servers[0] = initlocal(addr, 1);
+    local = servers[0];
+
     stdin := sys->fildes(0);
     print();
     while (1)
@@ -498,6 +500,10 @@ interactivetest(addr: string)
                 "help" or "?" =>
                     sys->print("Dht module tester program\n");
                     sys->print("Available commands:\n");
+                    sys->print("Multiple server management:\n");
+                    sys->print("\tserver <idx>\n");
+                    sys->print("\tstartservers <count>\n");
+                    sys->print("\tprintservers\n");
                     sys->print("Dht API methods:\n");
                     sys->print("\findnode <id>\n");
                     sys->print("\tping <id>\n");
@@ -519,7 +525,35 @@ interactivetest(addr: string)
                     sys->print("\thelp\n");
                     sys->print("\t?\n");
                 "exit" or "quit" =>
+                    for (i := 1; i < len servers; i++)
+                        servers[i].destroy();
                     return;
+                "server" =>
+                    args = tl args;
+                    if (args == nil)
+                        raise "fail:bad args";
+                    idx := int hd args;
+                    if (idx < 0 || idx >= len servers)
+                        raise "fail:bad server index";
+                    local = servers[idx];
+                "startservers" =>
+                    args = tl args;
+                    if (args == nil)
+                        raise "fail:bad args";
+                    count := int hd args;
+                    if (count <= 0)
+                        raise "fail:bad server count";
+                    newservers := array [count + 1] of ref Local;
+                    newservers[0] = servers[0];
+                    bootstrap := array [] of {ref servers[0].node};
+                    for (i := 1; i < count + 1; i++)
+                        newservers[i] = dht->start("udp!127.0.0.1!" + string (12100 + i - 1), bootstrap, Key.generate());
+                    servers = newservers;
+                "printservers" =>
+                    sys->print("Server count: %d\n", len servers);
+                    for (i := 0; i < len servers; i++)
+                        sys->print("\tServer[%d] = %s\n", i, servers[i].node.id.text());
+                    sys->print("Current server: %s\n", local.node.id.text());
                 "findnode" =>
                     args = tl args;
                     if (args == nil)
@@ -620,7 +654,7 @@ init(nil: ref Draw->Context, args: list of string)
     bigkey->init();
 
     args = tl args;
-    if (tl args == nil)
+    if (args == nil)
         starttest();
 
     addr := hd args;

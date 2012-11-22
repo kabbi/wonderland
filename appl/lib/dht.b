@@ -627,7 +627,7 @@ Bucket.isinrange(b: self ref Bucket, id: Key): int
 {
     return id.lt(b.maxrange) && !id.lt(b.minrange);
 }
-Bucket.addnode(b: self ref Bucket, n: Node): int
+Bucket.addnode(b: self ref Bucket, n: ref Node): int
 {
     if (len b.nodes >= K)
         return EBucketFull;
@@ -635,7 +635,7 @@ Bucket.addnode(b: self ref Bucket, n: Node): int
         return EAlreadyPresent; # Wouldn't it be better to automaticaly update?
     newnodes := array [len b.nodes + 1] of Node;
     newnodes[:] = b.nodes[:];
-    newnodes[len b.nodes] = n;
+    newnodes[len b.nodes] = *n;
     b.nodes = newnodes;
     return 0;
 }
@@ -677,7 +677,7 @@ Contacts.addcontact(c: self ref Contacts, n: ref Node)
     <-c.local.sync;
     bucketInd := c.findbucket(n.id);
     #TODO: Update lastaccess time?
-    case c.buckets[bucketInd].addnode(*n)
+    case c.buckets[bucketInd].addnode(n)
     {
         * =>
             #Success, nothing to do here.
@@ -719,7 +719,7 @@ Contacts.split(c: self ref Contacts, idx: int)
     r := ref Bucket(array [0] of Node, mid, src.maxrange, src.lastaccess);
     for (i := 0; i < len src.nodes; i++)
     {
-        n := src.nodes[i];
+        n := ref src.nodes[i];
         if (l.isinrange(n.id))
             l.addnode(n);
         else
@@ -874,7 +874,9 @@ Local.processtmsg(l: self ref Local, buf: array of byte)
         }
 
         sender := ref Node(msg.senderID, msg.remoteaddr, 0);
+        l.contacts.print(0);
         l.contacts.addcontact(sender);
+        l.contacts.print(0);
 
         pick m := msg {
             Ping =>
@@ -1160,7 +1162,7 @@ findnode(l: ref Local, targetnode: ref Node, uid: Key, rch: chan of array of ref
     l.callbacks.delete(uid.text());
 }
 
-start(localaddr: string, bootstrap: ref Node, id: Key): ref Local
+start(localaddr: string, bootstrap: array of ref Node, id: Key): ref Local
 {
     node := Node(id, localaddr, 0);
     contacts := ref Contacts(array [1] of ref Bucket, nil);
@@ -1174,7 +1176,6 @@ start(localaddr: string, bootstrap: ref Node, id: Key): ref Local
     (err, c) := sys->announce(localaddr);
     if (err != 0)
         return nil;
-    #sys->fprint(c.cfd, "headers");
 
     ch := chan of ref Rmsg;
     storeitem := ref StoreItem(array [0] of byte, 0);
@@ -1187,6 +1188,8 @@ start(localaddr: string, bootstrap: ref Node, id: Key): ref Local
     spawn server.process();
     spawn server.timer();
     spawn server.syncthread();
+
+    server.iterativefindnode(id, bootstrap);
 
     return server;
 }

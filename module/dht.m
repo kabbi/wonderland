@@ -116,7 +116,7 @@ Dht: module
 		lastaccess: Daytime->Tm;
 
 		isinrange: fn(nil: self ref Bucket, id: Key): int;
-		addnode: fn(nil: self ref Bucket, n: Node): int;
+		addnode: fn(nil: self ref Bucket, n: ref Node): int;
 		getnodes: fn(nil: self ref Bucket, size: int): array of Node;
 		findnode: fn(nil: self ref Bucket, id: Key): int;
         print: fn(nil: self ref Bucket, tabs: int); 
@@ -185,6 +185,6 @@ Dht: module
 	};
 
 	init:	fn();
-	start:	fn(localaddr: string, bootstrap: ref Node, id: Key): ref Local;
+	start:	fn(localaddr: string, bootstrap: array of ref Node, id: Key): ref Local;
 
 };
