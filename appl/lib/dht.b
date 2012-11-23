@@ -114,6 +114,8 @@ dist(k1, k2: Key): Key
 }
 findbyid(x: Key, a: array of ref Node): ref Node
 {
+    if (a == nil)
+        return nil;
     for (i := 0; i < len a; i++)
         if (x.eq(a[i].id))
             return a[i];
@@ -123,6 +125,10 @@ reaper[T](ch: chan of T, unreaped: int)
 {
     for (i := 0; i < unreaped; ++i)
         <- ch;
+}
+timerreaper(ch: chan of int)
+{
+    <- ch;
 }
 toref(a: array of Node): array of ref Node
 {
@@ -635,7 +641,7 @@ Bucket.addnode(b: self ref Bucket, n: ref Node): int
         return EAlreadyPresent; # Wouldn't it be better to automaticaly update?
     newnodes := array [len b.nodes + 1] of Node;
     newnodes[:] = b.nodes[:];
-    newnodes[len b.nodes] = *n;
+    newnodes[len b.nodes] = Node(n.id, n.addr, n.rtt);
     b.nodes = newnodes;
     return 0;
 }
@@ -810,7 +816,7 @@ Contacts.findclosenodes(c: self ref Contacts, id: Key): array of Node
         if ((bucketIdx + i < len c.buckets) && (bucketIdx + i >= 0))
         {
             newnodes = c.buckets[bucketIdx + i].getnodes(K - len nodes);
-            buffer := array[len nodes + len buffer] of Node;
+            buffer := array[len nodes + len newnodes] of Node;
             buffer[:] = nodes[:];
             buffer[len nodes:] = newnodes[:];
             nodes = buffer;
@@ -842,10 +848,10 @@ Local.process(l: self ref Local)
     l.processpid = sys->pctl(0, nil);
 
     # reading incoming packets
-    buffer := array [MAXRPC] of byte;
     l.conn.dfd = sys->open(l.conn.dir + "/data", Sys->OREAD);
     while (1)
     {
+        buffer := array [MAXRPC] of byte;
         bytesread := sys->read(l.conn.dfd, buffer, len buffer);
         l.logevent("process", "New incoming message");
 
@@ -874,9 +880,7 @@ Local.processtmsg(l: self ref Local, buf: array of byte)
         }
 
         sender := ref Node(msg.senderID, msg.remoteaddr, 0);
-        l.contacts.print(0);
         l.contacts.addcontact(sender);
-        l.contacts.print(0);
 
         pick m := msg {
             Ping =>
@@ -1052,7 +1056,7 @@ dhtfindnode(l: ref Local, id: Key, nodes: array of ref Node, asked: ref HashTabl
             spawn reaper(listench, pending);
             return ret;
         }
-        while (asked.find(nodes[nexttoask].id.text()) != nil && nexttoask < len nodes)
+        while (nexttoask < len nodes && asked.find(nodes[nexttoask].id.text()) != nil)
             ++nexttoask;
         if (nexttoask < len nodes)
         { 
@@ -1084,6 +1088,7 @@ Local.dhtping(l: self ref Local, id: Key): int
         answer := <-ch =>
             pick m := answer {
                 Ping =>
+                    spawn timerreaper(killerch);
                     if (!m.senderID.eq(id))
                     {
                         l.logevent("dhtping", "Received answer from unexpected node");
@@ -1091,6 +1096,7 @@ Local.dhtping(l: self ref Local, id: Key): int
                     }
                     result = sys->millisec() - sendtime;
                 * =>
+                    spawn timerreaper(killerch);
                     l.logevent("dhtping", "Received answer, but not the desired message format");
             }
         <-killerch =>
@@ -1115,6 +1121,7 @@ replacefirstnode(c: ref Contacts, toadd: Node, pingnode: Node, ch: chan of ref R
         answer = <-ch =>
             pick m := answer {
                 Ping =>
+                    spawn timerreaper(killerch);
                     if (!m.senderID.eq(pingnode.id))
                     {
                         c.local.logevent("replacefirstnode", "Received answer from unexpected node");
@@ -1123,6 +1130,7 @@ replacefirstnode(c: ref Contacts, toadd: Node, pingnode: Node, ch: chan of ref R
                     c.removecontact(pingnode.id);
                     c.addcontact(ref pingnode);
                 * =>
+                    spawn timerreaper(killerch);
                     c.local.logevent("replacefirstnode", "Received answer, but not the desired message format");
             }
         <-killerch =>
@@ -1145,6 +1153,7 @@ findnode(l: ref Local, targetnode: ref Node, uid: Key, rch: chan of array of ref
         answer = <-ch =>
             pick m := answer {
                 FindNode =>
+                    spawn timerreaper(killerch);
                     if (!m.senderID.eq(targetnode.id))
                     {
                         l.logevent("findnode", "Received answer from unexpected node");
@@ -1152,6 +1161,7 @@ findnode(l: ref Local, targetnode: ref Node, uid: Key, rch: chan of array of ref
                     }
                     rch <-= toref(m.nodes);
                 * =>
+                    spawn timerreaper(killerch);
                     l.logevent("findnode", "Received answer, but not the desired message format");
                     rch <-= nil;
             }
