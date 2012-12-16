@@ -149,7 +149,7 @@ Dht: module
 		store: ref HashTable[ref StoreItem];
 
 		# public API
-		iterativefindnode: fn(nil: self ref Local, id: Key, nodes: array of ref Node): ref Node;
+		dhtfindnode: fn(nil: self ref Local, id: Key, nodes: array of ref Node): ref Node;
 		#dhtfindvalue: fn(nil: self ref Local, id: Key): array of byte;
 		#dhtstore: fn(nil: self ref Local, data: array of byte): int;
 		# returns the rtt, or -1 if node is not reachable

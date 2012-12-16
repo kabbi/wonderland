@@ -561,7 +561,7 @@ interactivetest(addr: string)
                     key := Key.parse(hd args);
                     if (key == nil)
                         raise "fail:bad key";
-                    node := local.iterativefindnode(*key, array [0] of ref Node);
+                    node := local.dhtfindnode(*key, array [0] of ref Node);
                     if (node != nil)
                         sys->print("Node found! %s\n", node.text());
                     else
