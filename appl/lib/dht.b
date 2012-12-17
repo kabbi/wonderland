@@ -2,6 +2,8 @@ implement Dht;
 
 include "sys.m";
     sys: Sys;
+include "crc.m";
+    crc: Crc;
 include "ip.m";
     ip: IP;
     Udphdr, Udphdrlen, IPaddr: import ip;
@@ -94,6 +96,9 @@ init()
     sort = load Sort Sort->PATH;
     if (sort == nil)
         badmodule(Sort->PATH);
+    crc = load Crc Crc->PATH;
+    if (crc == nil)
+        badmodule(Crc->PATH);
     bigkey->init();
     ip->init();
 }
@@ -142,6 +147,11 @@ min(a: int, b: int): int
     if (a < b)
         return a;
     return b;
+}
+crc32(data: array of byte): int
+{
+    state := crc->init(0, int 16rFFFFFFFF);
+    return crc->crc(state, data, len data);
 }
 
 pnodes(a: array of byte, o: int, na: array of Node): int
@@ -911,7 +921,7 @@ Local.processtmsg(l: self ref Local, buf: array of byte)
                         result = SAlreadyHave;
                     else
                     {
-                        datacrc := 0; # todo: calculate crc here
+                        datacrc := crc32(m.data);
                         l.store.insert(m.key.text(), ref StoreItem(m.data, datacrc, daytime->now()));
                         result = SSuccess;
                     }
@@ -1064,12 +1074,11 @@ Local.dhtfindnode(l: self ref Local, id: Key, nodes: array of ref Node): ref Nod
     asked.insert(l.node.id.text(), ref l.node);
     return dhtfindnode(l, id, nodes, asked, 1);
 }
-Local.dhtstore(l: self ref Local, key: Key, data: array of byte): int
+Local.dhtstore(l: self ref Local, key: Key, data: array of byte)
 {
     nodes := l.findkclosest(key);
     for (i := 0; i < len nodes; i++)
         spawn store(l, nodes[i], key, data);
-    return 0;
 }
 Local.findkclosest(l: self ref Local, id: Key): array of ref Node
 {
@@ -1239,7 +1248,7 @@ store(l: ref Local, where: ref Node, key: Key, data: array of byte)
 {
     l.logevent("store", "Store called with key " + key.text());
     l.logevent("store", "Storing to  " + where.text());
-    datacrc := 0;
+    datacrc := crc32(data);
     msg := ref Tmsg.Store(Key.generate(), l.node.addr, l.node.id,
                where.id, key, array [0] of byte, datacrc);
     ch := l.sendtmsg(where, msg);
