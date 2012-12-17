@@ -626,6 +626,8 @@ istmsg(f: array of byte): int
 
 Node.text(n: self ref Node): string
 {
+    if (n == nil)
+        return "Node(nil)";
     return sys->sprint("Node(%s,%s,%ud)", n.id.text(), n.addr, n.rtt);
 }
 
@@ -880,7 +882,6 @@ Local.processtmsg(l: self ref Local, buf: array of byte)
         }
 
         sender := ref Node(msg.senderID, msg.remoteaddr, 0);
-        l.contacts.addcontact(sender);
 
         pick m := msg {
             Ping =>
@@ -912,6 +913,9 @@ Local.processtmsg(l: self ref Local, buf: array of byte)
                 answer := ref Rmsg.FindValue(m.uid, l.node.addr, l.node.id, m.senderID, result, nodes, value);
                 l.sendrmsg(sender, answer);
         }
+
+        # add every incoming node
+        l.contacts.addcontact(sender);
     }
 #    exception e
 #    {
@@ -971,8 +975,10 @@ Local.sendtmsg(l: self ref Local, n: ref Node, msg: ref Tmsg): chan of ref Rmsg
 
     buf := msg.pack();
     (err, c) := sys->dial(n.addr, "");
+    # Here and below, do not throw anything by now
     if (err != 0)
-        raise sys->sprint("fail:sendtmsg:send error:%r");
+        l.logevent("sendtmsg", sys->sprint("Send error: %r"));
+        #raise sys->sprint("fail:sendtmsg:send error:%r");
 
     l.callbacks.insert(msg.uid.text(), ch);
     sys->write(c.dfd, buf, len buf);
@@ -986,7 +992,8 @@ Local.sendrmsg(l: self ref Local, n: ref Node, msg: ref Rmsg)
     buf := msg.pack();
     (err, c) := sys->dial(n.addr, "");
     if (err != 0)
-        raise sys->sprint("fail:senrdmsg:send error:%r");
+        l.logevent("sendrsmsg", sys->sprint("Send error: %r"));
+        #raise sys->sprint("fail:senrdmsg:send error:%r");
     sys->write(c.dfd, buf, len buf);
 }
 Local.destroy(l: self ref Local)
@@ -1015,7 +1022,7 @@ DistComp: adt {
 };
 DistComp.gt(dc: self ref DistComp, n1, n2: ref Node): int
 {
-    return dist(n2.id, dc.localid).gt(dist(n1.id, dc.localid));
+    return dist(n1.id, dc.localid).gt(dist(n2.id, dc.localid));
 }
 Local.dhtfindnode(l: self ref Local, id: Key, nodes: array of ref Node): ref Node
 # nodes - starting array of nodes:
@@ -1026,14 +1033,34 @@ Local.dhtfindnode(l: self ref Local, id: Key, nodes: array of ref Node): ref Nod
     l.logevent("dhtfindnode", "Starting node array size: " + string len nodes);
     if (len nodes == 0)
         nodes = toref(l.contacts.findclosenodes(id));
-    return dhtfindnode(l, id, nodes, hashtable->new(HASHSIZE, ref Key.generate()));
+    asked := hashtable->new(HASHSIZE, ref Node(Key.generate(), "", 0));
+    asked.insert(l.node.id.text(), ref l.node);
+    return dhtfindnode(l, id, nodes, asked, 1);
 }
-dhtfindnode(l: ref Local, id: Key, nodes: array of ref Node, asked: ref HashTable[ref Key]): ref Node
+Local.findkclosest(l: self ref Local, id: Key): array of ref Node
 {
+    nodes := toref(l.contacts.findclosenodes(id));
+    asked := hashtable->new(HASHSIZE, ref Node(Key.generate(), "", 0));
+    asked.insert(l.node.id.text(), ref l.node);
+    dhtfindnode(l, id, nodes, asked, 0);
+    askedlist := asked.all();
+    ret := array [len askedlist] of ref Node;
+
+    i := 0;
+    for (rest := askedlist; rest != nil; rest = tl rest)
+        ret[i++] = (hd rest).val;
+
+    sort->sort(ref DistComp(id), ret);
+    return ret[:min(K, len ret)];
+}
+dhtfindnode(l: ref Local, id: Key, nodes: array of ref Node, asked: ref HashTable[ref Node], search: int): ref Node
+{
+    l.logevent("::dhtfindnode", "Started searching");
+
     ret := findbyid(id, nodes);
-    if (ret != nil)
+    if (ret != nil && search)
         return ret;
-    sort->sort(ref DistComp(id), nodes); 
+    sort->sort(ref DistComp(id), nodes);
     listench := chan of array of ref Node; 
 
     pending := 0;
@@ -1041,17 +1068,20 @@ dhtfindnode(l: ref Local, id: Key, nodes: array of ref Node, asked: ref HashTabl
     while (nexttoask < min(len nodes, ALPHA))
     {
         if (asked.find(nodes[nexttoask].id.text()) != nil)
+        {
+            ++nexttoask;
             continue;
-        asked.insert(nodes[nexttoask].id.text(), ref Key.generate());
+        }
+        asked.insert(nodes[nexttoask].id.text(), nodes[nexttoask]);
         spawn findnode(l, nodes[nexttoask++], id, listench);
         ++pending;
     }
 
     while (pending > 0)
     {
-        ret = dhtfindnode(l, id, <- listench, asked);
+        ret = dhtfindnode(l, id, <- listench, asked, search);
         --pending;
-        if (ret != nil)
+        if (ret != nil && search)
         {
             spawn reaper(listench, pending);
             return ret;
@@ -1060,7 +1090,7 @@ dhtfindnode(l: ref Local, id: Key, nodes: array of ref Node, asked: ref HashTabl
             ++nexttoask;
         if (nexttoask < len nodes)
         { 
-            asked.insert(nodes[nexttoask].id.text(), ref Key.generate());
+            asked.insert(nodes[nexttoask].id.text(), nodes[nexttoask]);
             spawn findnode(l, nodes[nexttoask++], id, listench);
             ++pending;
         }
@@ -1199,7 +1229,7 @@ start(localaddr: string, bootstrap: array of ref Node, id: Key): ref Local
     spawn server.timer();
     spawn server.syncthread();
 
-    server.iterativefindnode(id, bootstrap);
+    server.dhtfindnode(id, bootstrap);
 
     return server;
 }

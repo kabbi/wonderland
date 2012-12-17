@@ -167,6 +167,8 @@ Dht: module
 
 		# do some periodic processing
 		process: fn(nil: self ref Local);
+		# find k closest nodes to the given one
+		findkclosest: fn(nil: self ref Local, id: Key): array of ref Node;
 		# process some message
 		processrmsg: fn(nil: self ref Local, buf: array of byte);
 		processtmsg: fn(nil: self ref Local, buf: array of byte);

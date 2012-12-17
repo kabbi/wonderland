@@ -505,7 +505,7 @@ interactivetest(addr: string)
                     sys->print("\tstartservers <count>\n");
                     sys->print("\tprintservers\n");
                     sys->print("Dht API methods:\n");
-                    sys->print("\findnode <id>\n");
+                    sys->print("\tfindnode <id>\n");
                     sys->print("\tping <id>\n");
                     sys->print("Manual contacts manipulation:\n");
                     sys->print("\taddcontact <id> <addr> <rtt>\n");
@@ -566,6 +566,22 @@ interactivetest(addr: string)
                         sys->print("Node found! %s\n", node.text());
                     else
                         sys->print("Nothing was found\n");
+                "findkclosest" =>
+                    args = tl args;
+                    if (args == nil)
+                        raise "fail:bad args";
+                    key := Key.parse(hd args);
+                    if (key == nil)
+                        raise "fail:bad key";
+                    nodes := local.findkclosest(*key);
+                    if (len nodes)
+                    {
+                        sys->print("Found nodes:\n");
+                        for (i := 0; i < len nodes; i++)
+                            sys->print("%s\n", nodes[i].text());
+                    }
+                    else
+                        sys->print("Nothing was found\n");
                 "addcontact" =>
                     args = tl args;
                     node := parsenode(args);
@@ -617,7 +633,11 @@ interactivetest(addr: string)
                     args = tl args;
                     if (args == nil)
                         raise "fail:bad args";
-                    fd := sys->create(hd args, Sys->OWRITE, 8r777);
+                    fd: ref Sys->FD;
+                    if (hd args == "con")
+                        fd = sys->fildes(1);
+                    else
+                        fd = sys->create(hd args, Sys->OWRITE, 8r777);
                     local.setlogfd(fd);
                 * =>
                     raise "fail:no such command!";
