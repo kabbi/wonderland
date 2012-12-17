@@ -47,6 +47,14 @@ Dht: module
 	FVValue,
 	FVMax: con iota;
 
+	# Store result codes
+	SNotFound,		# if crc present and no data found with such key
+	SCRCFail,		# if crc present and not matches
+	SCRCOk,			# if crc present and matches
+	SAlreadyHave,	# if crc not present and data is already stored
+	SSuccess,		# if stored successfully
+	SFail: con iota;
+
 	Node: adt {
 		id: Key;
 		addr: string;
@@ -66,9 +74,9 @@ Dht: module
 			# no additional data
 		Store =>
 			key: Key;
+			# if null, check crc and respond, if not - store
 			data: array of byte;
-			# to allow two-stage STORE
-			ask: int;
+			crc: int;
 		FindNode =>
 			key: Key;
 		FindValue =>
@@ -139,6 +147,7 @@ Dht: module
 
 	StoreItem: adt {
 		data: array of byte;
+		datacrc: int;
 		lastaccess: int;
 	};
 
@@ -151,7 +160,7 @@ Dht: module
 		# public API
 		dhtfindnode: fn(nil: self ref Local, id: Key, nodes: array of ref Node): ref Node;
 		#dhtfindvalue: fn(nil: self ref Local, id: Key): array of byte;
-		#dhtstore: fn(nil: self ref Local, data: array of byte): int;
+		dhtstore: fn(nil: self ref Local, key: Key, data: array of byte): int;
 		# returns the rtt, or -1 if node is not reachable
 		# raises exception if node is not found (??)
 		dhtping: fn(nil: self ref Local, id: Key): int;

@@ -322,7 +322,7 @@ Tmsg.pack(t: self ref Tmsg): array of byte
     Store =>
         o = pkey(d, o, m.key);
         o = parray(d, o, m.data);
-        o = p32(d, o, m.ask);
+        o = p32(d, o, m.crc);
     FindNode or FindValue =>
         o = parray(d, o, m.key.data);
     * =>
@@ -371,9 +371,9 @@ Tmsg.unpack(f: array of byte): (int, ref Tmsg)
         (key, o) = gkey(f, o);
         data: array of byte;
         (data, o) = garray(f, o);
-        ask := g32(f, o);
+        crc := g32(f, o);
         o += BIT32SZ;
-        return (o, ref Tmsg.Store(uid, remoteaddr, senderID, targetID, key, data, ask));
+        return (o, ref Tmsg.Store(uid, remoteaddr, senderID, targetID, key, data, crc));
     TFindNode =>
         key: Key;
         (key, o) = gkey(f, o);
@@ -403,7 +403,7 @@ Tmsg.text(t: self ref Tmsg): string
         # no data
         return s + ")";
     Store =>
-        return s + sys->sprint("%s,arr[%ud],%ud)", m.key.text(), len m.data, m.ask);
+        return s + sys->sprint("%s,arr[%ud],%ud)", m.key.text(), len m.data, m.crc);
     FindNode or FindValue =>
         return s + sys->sprint("%s)", m.key.text());
     }
@@ -888,8 +888,35 @@ Local.processtmsg(l: self ref Local, buf: array of byte)
                 answer := ref Rmsg.Ping(m.uid, l.node.addr, l.node.id, m.senderID);
                 l.sendrmsg(sender, answer);
             Store =>
-                l.store.insert(m.key.text(), ref StoreItem(m.data, daytime->now()));
-                answer := ref Rmsg.Store(m.uid, l.node.addr, l.node.id, m.senderID, 42);
+                result := SFail;
+                if (len m.data == 0)
+                {
+                    ourdatapair := l.store.find(m.key.text());
+                    if (ourdatapair != nil)
+                    {
+                        # found, crc present - check crc
+                        ourdatacrc := ourdatapair.datacrc;
+                        if (m.crc == ourdatacrc)
+                            result = SCRCOk;
+                        else
+                            result = SCRCFail;
+                    }
+                    else
+                        result = SNotFound;
+                }
+                else
+                {
+                    ourdatapair := l.store.find(m.key.text());
+                    if (ourdatapair != nil)
+                        result = SAlreadyHave;
+                    else
+                    {
+                        datacrc := 0; # todo: calculate crc here
+                        l.store.insert(m.key.text(), ref StoreItem(m.data, datacrc, daytime->now()));
+                        result = SSuccess;
+                    }
+                }
+                answer := ref Rmsg.Store(m.uid, l.node.addr, l.node.id, m.senderID, result);
                 l.sendrmsg(sender, answer);
             FindNode =>
                 nodes := l.contacts.findclosenodes(m.key);
@@ -1036,6 +1063,13 @@ Local.dhtfindnode(l: self ref Local, id: Key, nodes: array of ref Node): ref Nod
     asked := hashtable->new(HASHSIZE, ref Node(Key.generate(), "", 0));
     asked.insert(l.node.id.text(), ref l.node);
     return dhtfindnode(l, id, nodes, asked, 1);
+}
+Local.dhtstore(l: self ref Local, key: Key, data: array of byte): int
+{
+    nodes := l.findkclosest(key);
+    for (i := 0; i < len nodes; i++)
+        spawn store(l, nodes[i], key, data);
+    return 0;
 }
 Local.findkclosest(l: self ref Local, id: Key): array of ref Node
 {
@@ -1199,7 +1233,48 @@ findnode(l: ref Local, targetnode: ref Node, uid: Key, rch: chan of array of ref
             l.logevent("findnode", "Message wait timeout");
             rch <-= nil;
     }
-    l.callbacks.delete(uid.text());
+    l.callbacks.delete(msg.uid.text());
+}
+store(l: ref Local, where: ref Node, key: Key, data: array of byte)
+{
+    l.logevent("store", "Store called with key " + key.text());
+    l.logevent("store", "Storing to  " + where.text());
+    datacrc := 0;
+    msg := ref Tmsg.Store(Key.generate(), l.node.addr, l.node.id,
+               where.id, key, array [0] of byte, datacrc);
+    ch := l.sendtmsg(where, msg);
+    answer: ref Rmsg;
+    killerch := chan of int;
+    spawn timer(killerch, 1000);
+    alt {
+        answer = <-ch =>
+            pick m := answer {
+                Store =>
+                    spawn timerreaper(killerch);
+                    if (!m.senderID.eq(where.id))
+                    {
+                        l.logevent("store", "Received answer from unexpected node");
+                        break;
+                    }
+                    # check result code
+                    case m.result {
+                        SNotFound =>
+                        SCRCFail =>
+                            l.logevent("store", "Answer from " + m.senderID.text() + ": CRC fail or not found, sending data...");
+                            newmsg := ref Tmsg.Store(Key.generate(), l.node.addr, l.node.id,
+                                          where.id, key, data, 0);
+                            l.sendtmsg(where, newmsg);
+                        SCRCOk =>
+                            l.logevent("store", "Answer from " + m.senderID.text() + ": CRC ok, no need to send");
+                    } 
+                * =>
+                    spawn timerreaper(killerch);
+                    l.logevent("store", "Received answer, but not the desired message format");
+            }
+        <-killerch =>
+            l.logevent("store", "Message wait timeout");
+    }
+    l.callbacks.delete(msg.uid.text());
 }
 
 start(localaddr: string, bootstrap: array of ref Node, id: Key): ref Local
@@ -1218,7 +1293,7 @@ start(localaddr: string, bootstrap: array of ref Node, id: Key): ref Local
         return nil;
 
     ch := chan of ref Rmsg;
-    storeitem := ref StoreItem(array [0] of byte, 0);
+    storeitem := ref StoreItem(array [0] of byte, 0, 0);
     store := hashtable->new(STORESIZE, storeitem);
     server := ref Local(node, contacts, store, hashtable->new(CALLBACKSIZE, ch),
         0, 0, 0, nil, c, chan of int);
