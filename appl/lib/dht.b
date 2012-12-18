@@ -885,9 +885,9 @@ Local.processtmsg(l: self ref Local, buf: array of byte)
         (nil, msg) := Tmsg.unpack(buf);
         l.logevent("processtmsg", "Incoming Tmsg received");
         l.logevent("processtmsg", "Dump: " + msg.text());
-        if (!msg.targetID.eq(l.node.id) || msg.senderID.eq(l.node.id))
+        if (!msg.targetID.eq(l.node.id))
         {
-            l.logevent("processtmsg", "The message is discarder, sender or target id error");
+            l.logevent("processtmsg", "The message is discarder, target id error");
             return;
         }
 
@@ -966,9 +966,9 @@ Local.processrmsg(l: self ref Local, buf: array of byte)
         (nil, msg) := Rmsg.unpack(buf);
         l.logevent("processrmsg", "Incoming Rmsg received.");
         l.logevent("processrmsg", "Dump: " + msg.text());
-        if (!msg.targetID.eq(l.node.id) || msg.senderID.eq(l.node.id))
+        if (!msg.targetID.eq(l.node.id))
         {
-            l.logevent("processrmsg", "The message is discarder, sender or target id error");
+            l.logevent("processrmsg", "The message is discarder, target id error");
             return;
         }
 
@@ -1267,12 +1267,12 @@ store(l: ref Local, where: ref Node, key: Key, data: array of byte)
                     }
                     # check result code
                     case m.result {
-                        SNotFound =>
-                        SCRCFail =>
+                        SCRCFail or SNotFound =>
                             l.logevent("store", "Answer from " + m.senderID.text() + ": CRC fail or not found, sending data...");
                             newmsg := ref Tmsg.Store(Key.generate(), l.node.addr, l.node.id,
                                           where.id, key, data, 0);
                             l.sendtmsg(where, newmsg);
+                            l.callbacks.delete(newmsg.uid.text()); # answer is not interesting
                         SCRCOk =>
                             l.logevent("store", "Answer from " + m.senderID.text() + ": CRC ok, no need to send");
                     } 

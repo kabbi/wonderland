@@ -506,6 +506,7 @@ interactivetest(addr: string)
                     sys->print("\tprintservers\n");
                     sys->print("Dht API methods:\n");
                     sys->print("\tfindnode <id>\n");
+                    sys->print("\tstore <key> <data>\n");
                     sys->print("\tping <id>\n");
                     sys->print("Manual contacts manipulation:\n");
                     sys->print("\taddcontact <id> <addr> <rtt>\n");
@@ -582,6 +583,18 @@ interactivetest(addr: string)
                     }
                     else
                         sys->print("Nothing was found\n");
+                "store" =>
+                    args = tl args;
+                    if (args == nil)
+                        raise "fail:bad args";
+                    key := Key.parse(hd args);
+                    if (key == nil)
+                        raise "fail:bad key";
+                    args = tl args;
+                    if (args == nil)
+                        raise "fail:bad data";
+                    data := array of byte hd args;
+                    local.dhtstore(*key, data);
                 "addcontact" =>
                     args = tl args;
                     node := parsenode(args);
