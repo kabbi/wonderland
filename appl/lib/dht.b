@@ -974,7 +974,7 @@ Local.processrmsg(l: self ref Local, buf: array of byte)
 
         ch: chan of ref Rmsg;
         ch = l.callbacks.find(msg.uid.text());
-        l.logevent("processrmsg", sys->sprint("Sending message to the callback, success: %d", ch == nil));
+        l.logevent("processrmsg", sys->sprint("Sending message to the callback, success: %d", ch != nil));
         if (ch != nil)
             ch <-= msg;
     }
@@ -1072,7 +1072,20 @@ Local.dhtfindnode(l: self ref Local, id: Key, nodes: array of ref Node): ref Nod
         nodes = toref(l.contacts.findclosenodes(id));
     asked := hashtable->new(HASHSIZE, ref Node(Key.generate(), "", 0));
     asked.insert(l.node.id.text(), ref l.node);
-    return dhtfindnode(l, id, nodes, asked, 1);
+    (node, nil) := dhtfindnode(l, id, nodes, asked, 1, 0);
+    return node;
+}
+Local.dhtfindvalue(l: self ref Local, id: Key): array of byte
+{
+    l.logevent("dhtfindvalue", "Started to search for value " + id.text());
+    nodes := toref(l.contacts.findclosenodes(id));
+    realnodes := array [len nodes + 1] of ref Node;
+    realnodes[:] = nodes[:];
+    realnodes[len nodes] = ref l.node;
+    l.logevent("dhtfindvalue", "Starting nodes count: " + string len realnodes);
+    asked := hashtable->new(HASHSIZE, ref Node(Key.generate(), "", 0));
+    (nil, data) := dhtfindnode(l, id, realnodes, asked, 0, 1);
+    return data;
 }
 Local.dhtstore(l: self ref Local, key: Key, data: array of byte)
 {
@@ -1082,10 +1095,11 @@ Local.dhtstore(l: self ref Local, key: Key, data: array of byte)
 }
 Local.findkclosest(l: self ref Local, id: Key): array of ref Node
 {
+    l.logevent("findkclosest", "Started to search for K closest: " + id.text());
     nodes := toref(l.contacts.findclosenodes(id));
     asked := hashtable->new(HASHSIZE, ref Node(Key.generate(), "", 0));
     asked.insert(l.node.id.text(), ref l.node);
-    dhtfindnode(l, id, nodes, asked, 0);
+    dhtfindnode(l, id, nodes, asked, 0, 0);
     askedlist := asked.all();
     ret := array [len askedlist] of ref Node;
 
@@ -1093,18 +1107,38 @@ Local.findkclosest(l: self ref Local, id: Key): array of ref Node
     for (rest := askedlist; rest != nil; rest = tl rest)
         ret[i++] = (hd rest).val;
 
+    l.logevent("findkclosest", "Returned " + string len ret + " nodes");
     sort->sort(ref DistComp(id), ret);
     return ret[:min(K, len ret)];
 }
-dhtfindnode(l: ref Local, id: Key, nodes: array of ref Node, asked: ref HashTable[ref Node], search: int): ref Node
+dhtfindnode(l: ref Local, id: Key, nodes: array of ref Node, asked: ref HashTable[ref Node], search: int, retrievevalue: int): (ref Node, array of byte)
+# Arguments:
+#   ~l: 
+#       Link to the local dht-node.
+#   ~id:
+#       Key corresponing to node or data.
+#   ~asked:
+#       Set of already asked nodes. Don't need to ask them again.
+#   ~search: 
+#       Flag. Indicates whether we should return immediately after finding
+#             the needed node. Is set in findkclosest.
+#   ~retrievevalue: 
+#       Flag. Indicates whether we should ask nodes for value with
+#             key == ~id. Is set in findvalue.
+# Return value: 
+#   @ref Node: 
+#       A Node with Node.id == ~id, if it was found, nill - otherwise
+#   @array of byte:
+#       If retrievevalue is set - data stored by the key == ~id
 {
-    l.logevent("::dhtfindnode", "Started searching");
-
-    ret := findbyid(id, nodes);
-    if (ret != nil && search)
-        return ret;
+    if (!retrievevalue)
+    {
+        ret := findbyid(id, nodes);
+        if (ret != nil && search)
+            return (ret, nil);
+    }
     sort->sort(ref DistComp(id), nodes);
-    listench := chan of array of ref Node; 
+    listench := chan of ref Rmsg; 
 
     pending := 0;
     nexttoask := 0;
@@ -1116,15 +1150,29 @@ dhtfindnode(l: ref Local, id: Key, nodes: array of ref Node, asked: ref HashTabl
             continue;
         }
         asked.insert(nodes[nexttoask].id.text(), nodes[nexttoask]);
-        spawn findnode(l, nodes[nexttoask++], id, listench);
+        spawn findnode(l, nodes[nexttoask++], id, listench, retrievevalue);
         ++pending;
     }
 
     while (pending > 0)
     {
-        ret = dhtfindnode(l, id, <- listench, asked, search);
+        ret: (ref Node, array of byte);
+        newnodes: array of ref Node;
+        msg := <- listench;
+        if (msg != nil)
+            pick m := msg {
+                FindNode =>
+                    newnodes = toref(m.nodes);
+                    ret = dhtfindnode(l, id, newnodes, asked, search, retrievevalue);
+                FindValue =>
+                    if (len m.value != 0)
+                        return (nil, m.value);
+                    newnodes = toref(m.nodes);
+                    ret = dhtfindnode(l, id, newnodes, asked, search, retrievevalue);
+            }
         --pending;
-        if (ret != nil && search)
+        (node, nil) := ret;
+        if (node != nil && search)
         {
             spawn reaper(listench, pending);
             return ret;
@@ -1134,12 +1182,12 @@ dhtfindnode(l: ref Local, id: Key, nodes: array of ref Node, asked: ref HashTabl
         if (nexttoask < len nodes)
         { 
             asked.insert(nodes[nexttoask].id.text(), nodes[nexttoask]);
-            spawn findnode(l, nodes[nexttoask++], id, listench);
+            spawn findnode(l, nodes[nexttoask++], id, listench, retrievevalue);
             ++pending;
         }
     }
     
-    return nil;
+    return (nil, nil);
 }
 Local.dhtping(l: self ref Local, id: Key): int
 {
@@ -1213,26 +1261,45 @@ replacefirstnode(c: ref Contacts, toadd: Node, pingnode: Node, ch: chan of ref R
     }
     c.local.callbacks.delete(uid.text());
 }
-findnode(l: ref Local, targetnode: ref Node, uid: Key, rch: chan of array of ref Node)
+findnode(l: ref Local, targetnode: ref Node, uid: Key, rch: chan of ref Rmsg, retrievevalue: int)
 {
     l.logevent("findnode", "Findnode called, with key " + uid.text());
-    msg := ref Tmsg.FindNode(Key.generate(), l.node.addr, l.node.id,
-                targetnode.id, uid);
+    msg: ref Tmsg;
+    if (retrievevalue)
+        msg = ref Tmsg.FindValue(Key.generate(), l.node.addr, l.node.id, targetnode.id, uid);
+    else
+        msg = ref Tmsg.FindNode(Key.generate(), l.node.addr, l.node.id, targetnode.id, uid);
     ch := l.sendtmsg(targetnode, msg);
     answer: ref Rmsg;
     killerch := chan of int;
     spawn timer(killerch, 2000);
     alt {
         answer = <-ch =>
+            if (!answer.senderID.eq(targetnode.id))
+            {
+                l.logevent("findnode", "Received answer from unexpected node");
+                rch <-= nil;
+                break;
+            }
             pick m := answer {
-                FindNode =>
+                FindValue =>
                     spawn timerreaper(killerch);
-                    if (!m.senderID.eq(targetnode.id))
+                    if (!retrievevalue)
                     {
-                        l.logevent("findnode", "Received answer from unexpected node");
+                        l.logevent("findnode", "Received unexpected Rmsg type");
+                        rch <-= nil;
                         break;
                     }
-                    rch <-= toref(m.nodes);
+                    rch <-= m;
+                FindNode =>
+                    spawn timerreaper(killerch);
+                    if (!retrievevalue)
+                    {
+                        l.logevent("findnode", "Received unexpected Rmsg type");
+                        rch <-= nil;
+                        break;
+                    }
+                    rch <-= m;
                 * =>
                     spawn timerreaper(killerch);
                     l.logevent("findnode", "Received answer, but not the desired message format");

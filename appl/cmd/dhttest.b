@@ -506,6 +506,7 @@ interactivetest(addr: string)
                     sys->print("\tprintservers\n");
                     sys->print("Dht API methods:\n");
                     sys->print("\tfindnode <id>\n");
+                    sys->print("\tfindvalue <id>\n");
                     sys->print("\tstore <key> <data>\n");
                     sys->print("\tping <id>\n");
                     sys->print("Manual contacts manipulation:\n");
@@ -525,7 +526,7 @@ interactivetest(addr: string)
                     sys->print("\texit\n");
                     sys->print("\thelp\n");
                     sys->print("\t?\n");
-                "exit" or "quit" =>
+                "exit" or "quit" or "kill" =>
                     for (i := 1; i < len servers; i++)
                         servers[i].destroy();
                     return;
@@ -565,6 +566,18 @@ interactivetest(addr: string)
                     node := local.dhtfindnode(*key, array [0] of ref Node);
                     if (node != nil)
                         sys->print("Node found! %s\n", node.text());
+                    else
+                        sys->print("Nothing was found\n");
+                "findvalue" =>
+                    args = tl args;
+                    if (args == nil)
+                        raise "fail:bad args";
+                    key := Key.parse(hd args);
+                    if (key == nil)
+                        raise "fail:bad key";
+                    data := local.dhtfindvalue(*key);
+                    if (data != nil)
+                        sys->print("Something found: %s\n", string data);
                     else
                         sys->print("Nothing was found\n");
                 "findkclosest" =>
@@ -646,11 +659,7 @@ interactivetest(addr: string)
                     args = tl args;
                     if (args == nil)
                         raise "fail:bad args";
-                    fd: ref Sys->FD;
-                    if (hd args == "con")
-                        fd = sys->fildes(1);
-                    else
-                        fd = sys->create(hd args, Sys->OWRITE, 8r777);
+                    fd := sys->create(hd args, Sys->OWRITE, 8r777);
                     local.setlogfd(fd);
                 * =>
                     raise "fail:no such command!";
