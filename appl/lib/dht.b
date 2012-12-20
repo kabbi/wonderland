@@ -677,7 +677,7 @@ Bucket.print(b: self ref Bucket, tabs: int)
 {
     indent := string array[tabs] of {* => byte '\t'}; 
 
-    sys->print("%s(Bucket [lastaccess=%s]\n", indent, daytime->text(ref b.lastaccess));
+    sys->print("%s(Bucket [lastaccess=%s]\n", indent, daytime->text(daytime->local(b.lastaccess)));
     sys->print("%s        [minrange=%s]\n", indent, b.minrange.text());
     sys->print("%s        Nodes:\n", indent);
     for (i := 0; i < len b.nodes; i++)
@@ -803,7 +803,7 @@ Contacts.randomidinbucket(c: self ref Contacts, idx: int): Key
 
 Contacts.touch(c: self ref Contacts, idx: int)
 {
-    c.buckets[idx].lastaccess = *daytime->local(daytime->now());
+    c.buckets[idx].lastaccess = daytime->now();
 }
 Contacts.getnode(c: self ref Contacts, id: Key): ref Node
 {
@@ -990,8 +990,38 @@ Local.timer(l: self ref Local)
 
     while (1)
     {
-        # do something really usefull here...
         sys->sleep(1000);
+        curtime := daytime->now();
+
+        # refresh buckets
+        for (i := 0; i < len l.contacts.buckets; i++)
+        {
+            bucket := l.contacts.buckets[i];
+            if (curtime - bucket.lastaccess > REFRESH_TIME)
+            {
+                randomkey := l.contacts.randomidinbucket(i);
+                l.dhtfindnode(randomkey, nil);
+                bucket.lastaccess = curtime;
+            }
+        }
+
+        # replicate storage
+        store := l.store.all();
+        for (rest := store; rest != nil; rest = tl rest)
+        {
+            item := hd rest;
+            if (curtime - item.val.lastaccess > REPLICATE_TIME)
+            {
+                l.dhtstore(*Key.parse(item.key), item.val.data);
+                item.val.lastaccess = curtime;
+            }
+        }
+
+        # republish local storage 
+        # ...
+
+        # expire storage
+        # ...
     }
 }
 Local.syncthread(l: self ref Local)
@@ -1068,7 +1098,7 @@ Local.dhtfindnode(l: self ref Local, id: Key, nodes: array of ref Node): ref Nod
 {
     l.logevent("dhtfindnode", "Started to search for node " + id.text());
     l.logevent("dhtfindnode", "Starting node array size: " + string len nodes);
-    if (len nodes == 0)
+    if (nodes == nil)
         nodes = toref(l.contacts.findclosenodes(id));
     asked := hashtable->new(HASHSIZE, ref Node(Key.generate(), "", 0));
     asked.insert(l.node.id.text(), ref l.node);
@@ -1293,7 +1323,7 @@ findnode(l: ref Local, targetnode: ref Node, uid: Key, rch: chan of ref Rmsg, re
                     rch <-= m;
                 FindNode =>
                     spawn timerreaper(killerch);
-                    if (!retrievevalue)
+                    if (retrievevalue)
                     {
                         l.logevent("findnode", "Received unexpected Rmsg type");
                         rch <-= nil;
@@ -1361,7 +1391,7 @@ start(localaddr: string, bootstrap: array of ref Node, id: Key): ref Local
     contacts.buckets[0] = ref Bucket(array [0] of Node,
         Key(array[BB] of { * => byte 0 }),
         Key(array[BB] of { * => byte 16rFF }),
-        *daytime->local(daytime->now()));
+        daytime->now());
 
     # try to announce connection
     (err, c) := sys->announce(localaddr);

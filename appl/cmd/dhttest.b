@@ -79,7 +79,7 @@ clean(verbose: int): int
     contacts.buckets[0] = ref Bucket(array [0] of Node,
     Key(array[BB] of { * => byte 0 }),
     Key(array[BB] of { * => byte 16rFF }),
-    *daytime->local(daytime->now()));
+    daytime->now());
     local.contacts = contacts;
     if (verbose)
         sys->print("OK. Local cleaned\n");
@@ -236,8 +236,7 @@ closesttest(count: int, verbose: int)
     addrandoms(count, 0);
     randomid := Key.generate();
     close := closest(randomid, 0);
-    b := Bucket(close, Key.generate(), Key.generate(), 
-                       *daytime->local(daytime->now()));
+    b := Bucket(close, Key.generate(), Key.generate(), daytime->now());
     for (k := 0; k < len close; ++k)
     {
         d := dist(randomid, close[k].id);
@@ -272,8 +271,7 @@ randomidinrangetest(count: int, verbose: int)
 {
     if (verbose)
         sys->print("checking randomidinbucketrange on %d random ids\n", count);
-    b := Bucket(array[0] of Node, Key.generate(), Key.generate(), 
-                                  *daytime->local(daytime->now()));
+    b := Bucket(array[0] of Node, Key.generate(), Key.generate(), daytime->now());
     if (verbose)
     {
         sys->print("bucket: \n");
@@ -563,7 +561,7 @@ interactivetest(addr: string)
                     key := Key.parse(hd args);
                     if (key == nil)
                         raise "fail:bad key";
-                    node := local.dhtfindnode(*key, array [0] of ref Node);
+                    node := local.dhtfindnode(*key, nil);
                     if (node != nil)
                         sys->print("Node found! %s\n", node.text());
                     else

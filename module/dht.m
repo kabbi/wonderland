@@ -20,11 +20,11 @@ Dht: module
 	B:		con 32;
 	BB:		con B/8; # B in bytes
 	K:		con 5;
-	EXPIRE_TIME:	con 86410;
-	REFRESH_TIME:	con 3600;
-	REPLICATE_TIME:	con 3600;
-	REPUBLISH_TIME: con 86400;
-	RANDOMNESS:		con 1000;
+	EXPIRE_TIME:	con 86410;	# 86410
+	REFRESH_TIME:	con 10;		# 3600
+	REPLICATE_TIME:	con 3600;	# 3600
+	REPUBLISH_TIME: con 86400;	# 86400
+	RANDOMNESS:		con 1000;	# 1000
 
 	# DHT messages
 	TPing,			# 100
@@ -121,7 +121,7 @@ Dht: module
 		nodes: array of Node;
 		minrange: Key;
 		maxrange: Key;
-		lastaccess: Daytime->Tm;
+		lastaccess: int;
 
 		isinrange: fn(nil: self ref Bucket, id: Key): int;
 		addnode: fn(nil: self ref Bucket, n: ref Node): int;
