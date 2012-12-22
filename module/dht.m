@@ -48,10 +48,7 @@ Dht: module
 	FVMax: con iota;
 
 	# Store result codes
-	SNotFound,		# if crc present and no data found with such key
-	SCRCFail,		# if crc present and not matches
-	SCRCOk,			# if crc present and matches
-	SAlreadyHave,	# if crc not present and data is already stored
+	SAlreadyHave,	# if data is already stored
 	SSuccess,		# if stored successfully
 	SFail: con iota;
 
@@ -61,6 +58,14 @@ Dht: module
 		rtt: int;		# round-trip time
 
 		text: fn(nil: self ref Node): string;
+	};
+
+	StoreItem: adt {
+		data: array of byte;
+		lastupdate: int;
+		publishtime: int;
+
+		eq: fn(a, b: ref StoreItem): int;
 	};
 
 	# DHT message handlers
@@ -74,9 +79,7 @@ Dht: module
 			# no additional data
 		Store =>
 			key: Key;
-			# if null, check crc and respond, if not - store
-			data: array of byte;
-			crc: int;
+			value: ref StoreItem;
 		FindNode =>
 			key: Key;
 		FindValue =>
@@ -104,9 +107,8 @@ Dht: module
 		FindNode =>
 			nodes: array of Node;
 		FindValue =>
-			result: int;
 			nodes: array of Node;
-			value: array of byte;
+			value: list of ref StoreItem;
 		}
 
 		read:	fn(fd: ref Sys->FD, msize: int): ref Rmsg;
@@ -145,21 +147,16 @@ Dht: module
         print: fn(nil: self ref Contacts, tabs: int);
 	};
 
-	StoreItem: adt {
-		data: array of byte;
-		datacrc: int;
-		lastaccess: int;
-	};
-
 	Local: adt {
 		node: Node;
 		contacts: cyclic ref Contacts;
 		# store consists of Key, data and last access time
-		store: ref HashTable[ref StoreItem];
+		store: ref HashTable[list of ref StoreItem];
+		ourstore: ref HashTable[list of ref StoreItem];
 
 		# public API
 		dhtfindnode: fn(nil: self ref Local, id: Key, nodes: array of ref Node): ref Node;
-		dhtfindvalue: fn(nil: self ref Local, id: Key): array of byte;
+		dhtfindvalue: fn(nil: self ref Local, id: Key): list of ref StoreItem;
 		dhtstore: fn(nil: self ref Local, key: Key, data: array of byte);
 		# returns the rtt, or -1 if node is not reachable
 		# raises exception if node is not found (??)

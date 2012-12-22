@@ -35,6 +35,7 @@ LEN: con BIT32SZ;   # string and array length field
 COUNT: con BIT32SZ;
 OFFSET: con BIT64SZ;
 KEY: con BB+LEN;
+VALUE: con LEN+BIT32SZ+BIT32SZ;
 
 STORESIZE: con 13;
 CALLBACKSIZE: con 13;
@@ -47,14 +48,14 @@ hdrlen := array[Tmax] of
 TPing =>    H,  # no data
 RPing =>    H,  # no data
 
-TStore =>   H+KEY+LEN+BIT32SZ,      # key[20] data[4+] ask[4]
+TStore =>   H+KEY+VALUE,      # key[20] value[12+]
 RStore =>   H+BIT32SZ,              # result[4]
 
 TFindNode =>    H+KEY,      # no data
 RFindNode =>    H+LEN,      # nodes[4+]
 
 TFindValue =>   H+KEY,              # no data
-RFindValue =>   H+BIT32SZ+LEN+LEN,  # result[4] nodes[4+] value[4+]
+RFindValue =>   H+LEN+LEN,  # result[4] nodes[4+] value[4+]
 };
 
 badmodule(p: string)
@@ -102,6 +103,8 @@ init()
     bigkey->init();
     ip->init();
 }
+
+# misc helper functions
 
 abs(a: int): int
 {
@@ -154,6 +157,8 @@ crc32(data: array of byte): int
     return crc->crc(state, data, len data);
 }
 
+# packet serialisation helpers
+
 pnodes(a: array of byte, o: int, na: array of Node): int
 {
     o = p32(a, o, len na);
@@ -173,6 +178,23 @@ pnode(a: array of byte, o: int, n: Node): int
 pkey(a: array of byte, o: int, k: Key): int
 {
     return parray(a, o, k.data);
+}
+
+pstoreitem(a: array of byte, o: int, si: ref StoreItem): int
+{
+    o = parray(a, o, si.data);
+    o = p32(a, o, si.lastupdate);
+    o = p32(a, o, si.publishtime);
+    return o;
+}
+
+pvalue(a: array of byte, o: int, l: list of ref StoreItem): int
+{
+    n := len l;
+    o = p32(a, o, n);
+    for (tail := l; tail != nil; tail = tl tail)
+        o = pstoreitem(a, o, hd tail);
+    return o;
 }
 
 parray(a: array of byte, o: int, sa: array of byte): int
@@ -213,20 +235,22 @@ p64(a: array of byte, o: int, b: big): int
     return o+BIT64SZ;
 }
 
-g32(a: array of byte, o: int): int
+g32(a: array of byte, o: int): (int, int)
 {
     if (o + BIT32SZ > len a)
         raise "fail: g32: malformed packet";
-    return (((((int a[o+3] << 8) | int a[o+2]) << 8) | int a[o+1]) << 8) | int a[o];
+    number := (((((int a[o+3] << 8) | int a[o+2]) << 8) | int a[o+1]) << 8) | int a[o];
+    return (number, o + BIT32SZ);
 }
 
-g64(a: array of byte, o: int): big
+g64(a: array of byte, o: int): (big, int)
 {
     if (o + BIT64SZ > len a)
         raise "fail: g64: malformed packet";
     b0 := (((((int a[o+3] << 8) | int a[o+2]) << 8) | int a[o+1]) << 8) | int a[o];
     b1 := (((((int a[o+7] << 8) | int a[o+6]) << 8) | int a[o+5]) << 8) | int a[o+4];
-    return (big b1 << 32) | (big b0 & 16rFFFFFFFF);
+    number := (big b1 << 32) | (big b0 & 16rFFFFFFFF);
+    return (number, o + BIT64SZ);
 }
 
 gstring(a: array of byte, o: int): (string, int)
@@ -239,8 +263,8 @@ garray(a: array of byte, o: int): (array of byte, int)
 {
     if(o < 0 || o+LEN > len a)
         raise "fail: garray: malformed packet";
-    l := g32(a, o);
-    o += LEN;
+    l: int;
+    (l, o) = g32(a, o);
     e := o+l;
     if(e > len a || l < 0)
         raise "fail: garray: malformed packet";
@@ -257,16 +281,19 @@ gkey(a: array of byte, o: int): (Key, int)
 
 gnode(a: array of byte, o: int): (Node, int)
 {
-    (key, o1) := gkey(a, o);
-    (addr, o2) := gstring(a, o1);
-    rtt := g32(a, o2);
-    return (Node(key, addr, rtt), o2+BIT32SZ);
+    key: Key;
+    (key, o) = gkey(a, o);
+    addr: string;
+    (addr, o) = gstring(a, o);
+    rtt: int;
+    (rtt, o) = g32(a, o);
+    return (Node(key, addr, rtt), o);
 }
 
 gnodes(a: array of byte, o: int): (array of Node, int)
 {
-    l := g32(a, o);
-    o += BIT32SZ;
+    l: int;
+    (l, o) = g32(a, o);
     if (l < 0)
         raise "fail: gnodes: malformed packet";
     nodes := array [l] of Node;
@@ -279,6 +306,32 @@ gnodes(a: array of byte, o: int): (array of Node, int)
     return (nodes, o);
 }
 
+gstoreitem(a: array of byte, o: int): (ref StoreItem, int)
+{
+    data: array of byte;
+    (data, o) = garray(a, o);
+    lastupdate: int;
+    (lastupdate, o) = g32(a, o);
+    publishtime: int;
+    (publishtime, o) = g32(a, o);
+    return (ref StoreItem(data, lastupdate, publishtime), o);
+}
+
+gvalue(a: array of byte, o: int): (list of ref StoreItem, int)
+{
+    l: int;
+    (l, o) = g32(a, o);
+    if (l < 0)
+        raise "fail:gvalue:malformed packet";
+    values: list of ref StoreItem;
+    for (i := 0; i < l; i++)
+    {
+        item: ref StoreItem;
+        (item, o) = gstoreitem(a, o);
+        values = item :: values;
+    }
+    return (values, o);
+}
 
 # handling TMsgs
 
@@ -305,7 +358,7 @@ Tmsg.packedsize(t: self ref Tmsg): int
     Ping =>
         # no dynamic data
     Store =>
-        ml += len m.data;
+        ml += len m.value.data;
     FindNode or FindValue =>
         # no dynamic data
     }
@@ -331,8 +384,7 @@ Tmsg.pack(t: self ref Tmsg): array of byte
         # no data
     Store =>
         o = pkey(d, o, m.key);
-        o = parray(d, o, m.data);
-        o = p32(d, o, m.crc);
+        o = pstoreitem(d, o, m.value);
     FindNode or FindValue =>
         o = parray(d, o, m.key.data);
     * =>
@@ -345,7 +397,7 @@ Tmsg.unpack(f: array of byte): (int, ref Tmsg)
 {
     if(len f < H)
         raise "fail: Tmsg.unpack: buffer too small";
-    size := g32(f, 0);
+    (size, o) := g32(f, 0);
     if (len f != size)
     {
         if (size < 0)
@@ -360,7 +412,7 @@ Tmsg.unpack(f: array of byte): (int, ref Tmsg)
     if(mtype >= len hdrlen || (mtype&1) != 0 || size < hdrlen[mtype])
         raise "fail: Tmsg.unpack: unknown packet type";
 
-    o := BIT32SZ + 1; # offset
+    o += 1; # for that mptype field
     uid, senderID, targetID: Key;
     remoteaddr: string;
     (uid, o) = gkey(f, o);
@@ -379,11 +431,9 @@ Tmsg.unpack(f: array of byte): (int, ref Tmsg)
     TStore =>
         key: Key;
         (key, o) = gkey(f, o);
-        data: array of byte;
-        (data, o) = garray(f, o);
-        crc := g32(f, o);
-        o += BIT32SZ;
-        return (o, ref Tmsg.Store(uid, remoteaddr, senderID, targetID, key, data, crc));
+        value: ref StoreItem;
+        (value, o) = gstoreitem(f, o);
+        return (o, ref Tmsg.Store(uid, remoteaddr, senderID, targetID, key, value));
     TFindNode =>
         key: Key;
         (key, o) = gkey(f, o);
@@ -413,7 +463,7 @@ Tmsg.text(t: self ref Tmsg): string
         # no data
         return s + ")";
     Store =>
-        return s + sys->sprint("%s,arr[%ud],%ud)", m.key.text(), len m.data, m.crc);
+        return s + sys->sprint("%s,arr[%ud])", m.key.text(), len m.value.data);
     FindNode or FindValue =>
         return s + sys->sprint("%s)", m.key.text());
     }
@@ -459,11 +509,18 @@ Rmsg.packedsize(r: self ref Rmsg): int
             ml += len (array of byte m.nodes[i].addr);
         }
     FindValue =>
-        ml += len m.value;
         for (i := 0; i < len m.nodes; i++)
         {
             ml += KEY + BIT32SZ + LEN;
             ml += len (array of byte m.nodes[i].addr);
+        }
+        for (tail := m.value; tail != nil; tail = tl tail)
+        {
+            item := hd tail;
+            ml += LEN;
+            ml += len item.data;
+            ml += BIT32SZ;
+            ml += BIT32SZ;
         }
     }
     return ml;
@@ -491,9 +548,8 @@ Rmsg.pack(r: self ref Rmsg): array of byte
     FindNode =>
         o = pnodes(d, o, m.nodes);
     FindValue =>
-        o = p32(d, o, m.result);
         o = pnodes(d, o, m.nodes);
-        o = parray(d, o, m.value);
+        o = pvalue(d, o, m.value);
     * =>
         raise "fail: Rmsg.pack: bad message type";
     }
@@ -504,7 +560,7 @@ Rmsg.unpack(f: array of byte): (int, ref Rmsg)
 {
     if(len f < H)
         raise "fail: Rmsg.unpack: buffer too small";
-    size := g32(f, 0);
+    (size, o) := g32(f, 0);
     if(len f != size)
     {
         if(len f < size)
@@ -517,7 +573,7 @@ Rmsg.unpack(f: array of byte): (int, ref Rmsg)
     if(mtype >= len hdrlen || (mtype&1) != 1 || size < hdrlen[mtype])
         raise "fail: Rmsg.unpack: unknown packet type";
 
-    o := BIT32SZ + 1; # offset
+    o += 1; # for that mptype field
     uid, senderID, targetID: Key;
     remoteaddr: string;
     (uid, o) = gkey(f, o);
@@ -534,21 +590,19 @@ Rmsg.unpack(f: array of byte): (int, ref Rmsg)
     RPing =>
         return (o, ref Rmsg.Ping(uid, remoteaddr, senderID, targetID));
     RStore =>
-        result := g32(f, o);
-        return (o+BIT32SZ, ref Rmsg.Store(uid, remoteaddr, senderID, targetID, result));
+        result: int;
+        (result, o) = g32(f, o);
+        return (o, ref Rmsg.Store(uid, remoteaddr, senderID, targetID, result));
     RFindNode =>
         nodes: array of Node;
         (nodes, o) = gnodes(f, o);
         return (o, ref Rmsg.FindNode(uid, remoteaddr, senderID, targetID, nodes));
     RFindValue =>
-        # implement reading!
-        result := g32(f, o);
-        o += BIT32SZ;
         nodes: array of Node;
         (nodes, o) = gnodes(f, o);
-        value: array of byte;
-        (value, o) = garray(f, o);
-        return (o, ref Rmsg.FindValue(uid, remoteaddr, senderID, targetID, result, nodes, value));
+        value: list of ref StoreItem;
+        (value, o) = gvalue(f, o);
+        return (o, ref Rmsg.FindValue(uid, remoteaddr, senderID, targetID, nodes, value));
     }
     raise "fail: Rmsg.unpack: malformed packet";
 }
@@ -610,7 +664,7 @@ readbuf(fd: ref Sys->FD, msglim: int): array of byte
             raise "fail: readmsg: read failed, got 0 bytes";
         raise sys->sprint("fail: readmsg: read failed: %r");
     }
-    ml := g32(sbuf, 0);
+    (ml, o) := g32(sbuf, 0);
     if(ml <= BIT32SZ)
         raise "fail: readmsg: invalid message size";
     if(ml > msglim)
@@ -639,6 +693,16 @@ Node.text(n: self ref Node): string
     if (n == nil)
         return "Node(nil)";
     return sys->sprint("Node(%s,%s,%ud)", n.id.text(), n.addr, n.rtt);
+}
+
+StoreItem.eq(a, b: ref StoreItem): int
+{
+    if (len a.data != len b.data)
+        return 0;
+    for (i := 0; i < len a.data; i++)
+        if (a.data[i] != b.data[i])
+            return 0;
+    return 1;
 }
 
 Bucket.isinrange(b: self ref Bucket, id: Key): int
@@ -899,30 +963,22 @@ Local.processtmsg(l: self ref Local, buf: array of byte)
                 l.sendrmsg(sender, answer);
             Store =>
                 result := SFail;
-                if (len m.data == 0)
+                if (len m.value.data != 0)
                 {
-                    ourdatapair := l.store.find(m.key.text());
-                    if (ourdatapair != nil)
+                    items := l.store.find(m.key.text());
+                    if (items != nil)
                     {
-                        # found, crc present - check crc
-                        ourdatacrc := ourdatapair.datacrc;
-                        if (m.crc == ourdatacrc)
-                            result = SCRCOk;
+                        if (lists->ismember(m.value, items))
+                            result = SAlreadyHave;
                         else
-                            result = SCRCFail;
+                        {
+                            items = m.value :: items;
+                            result = SSuccess;
+                        }
                     }
                     else
-                        result = SNotFound;
-                }
-                else
-                {
-                    ourdatapair := l.store.find(m.key.text());
-                    if (ourdatapair != nil)
-                        result = SAlreadyHave;
-                    else
                     {
-                        datacrc := crc32(m.data);
-                        l.store.insert(m.key.text(), ref StoreItem(m.data, datacrc, daytime->now()));
+                        l.store.insert(m.key.text(), list of {m.value});
                         result = SSuccess;
                     }
                 }
@@ -933,21 +989,14 @@ Local.processtmsg(l: self ref Local, buf: array of byte)
                 answer := ref Rmsg.FindNode(m.uid, l.node.addr, l.node.id, m.senderID, nodes);
                 l.sendrmsg(sender, answer);
             FindValue =>
-                result: int;
                 nodes := array [0] of Node;
-                value := array [0] of byte;
-                item := l.store.find(m.key.text());
-                if (item == nil)
-                {
-                    result = FVNodes;
+                value: list of ref StoreItem;
+                items := l.store.find(m.key.text());
+                if (items == nil)
                     nodes = l.contacts.findclosenodes(m.key);
-                }
                 else
-                {
-                    result = FVValue;
-                    value = item.data;
-                }
-                answer := ref Rmsg.FindValue(m.uid, l.node.addr, l.node.id, m.senderID, result, nodes, value);
+                    value = items;
+                answer := ref Rmsg.FindValue(m.uid, l.node.addr, l.node.id, m.senderID, nodes, value);
                 l.sendrmsg(sender, answer);
         }
 
@@ -1006,14 +1055,21 @@ Local.timer(l: self ref Local)
         }
 
         # replicate storage
-        store := l.store.all();
-        for (rest := store; rest != nil; rest = tl rest)
+        storage := l.store.all();
+        for (rest := storage; rest != nil; rest = tl rest)
         {
-            item := hd rest;
-            if (curtime - item.val.lastaccess > REPLICATE_TIME)
+            key := *Key.parse((hd rest).key[4:12]); # the key is string like 'key(...)'
+            itemlist := (hd rest).val;
+            for (tail := itemlist; tail != nil; tail = tl tail)
             {
-                l.dhtstore(*Key.parse(item.key), item.val.data);
-                item.val.lastaccess = curtime;
+                item := hd tail;
+                if (curtime - item.lastupdate > REPLICATE_TIME)
+                {
+                    item.lastupdate = curtime;
+                    nodes := l.findkclosest(key);
+                    for (i := 0; i < len nodes; i++)
+                        spawn store(l, nodes[i], key, item);
+                }
             }
         }
 
@@ -1105,7 +1161,7 @@ Local.dhtfindnode(l: self ref Local, id: Key, nodes: array of ref Node): ref Nod
     (node, nil) := dhtfindnode(l, id, nodes, asked, 1, 0);
     return node;
 }
-Local.dhtfindvalue(l: self ref Local, id: Key): array of byte
+Local.dhtfindvalue(l: self ref Local, id: Key): list of ref StoreItem
 {
     l.logevent("dhtfindvalue", "Started to search for value " + id.text());
     nodes := toref(l.contacts.findclosenodes(id));
@@ -1114,14 +1170,15 @@ Local.dhtfindvalue(l: self ref Local, id: Key): array of byte
     realnodes[len nodes] = ref l.node;
     l.logevent("dhtfindvalue", "Starting nodes count: " + string len realnodes);
     asked := hashtable->new(HASHSIZE, ref Node(Key.generate(), "", 0));
-    (nil, data) := dhtfindnode(l, id, realnodes, asked, 0, 1);
-    return data;
+    (nil, items) := dhtfindnode(l, id, realnodes, asked, 0, 1);
+    return items;
 }
 Local.dhtstore(l: self ref Local, key: Key, data: array of byte)
 {
+    item := ref StoreItem(data, daytime->now(), daytime->now());
     nodes := l.findkclosest(key);
     for (i := 0; i < len nodes; i++)
-        spawn store(l, nodes[i], key, data);
+        spawn store(l, nodes[i], key, item);
 }
 Local.findkclosest(l: self ref Local, id: Key): array of ref Node
 {
@@ -1141,7 +1198,7 @@ Local.findkclosest(l: self ref Local, id: Key): array of ref Node
     sort->sort(ref DistComp(id), ret);
     return ret[:min(K, len ret)];
 }
-dhtfindnode(l: ref Local, id: Key, nodes: array of ref Node, asked: ref HashTable[ref Node], search: int, retrievevalue: int): (ref Node, array of byte)
+dhtfindnode(l: ref Local, id: Key, nodes: array of ref Node, asked: ref HashTable[ref Node], search: int, retrievevalue: int): (ref Node, list of ref StoreItem)
 # Arguments:
 #   ~l: 
 #       Link to the local dht-node.
@@ -1186,7 +1243,7 @@ dhtfindnode(l: ref Local, id: Key, nodes: array of ref Node, asked: ref HashTabl
 
     while (pending > 0)
     {
-        ret: (ref Node, array of byte);
+        ret: (ref Node, list of ref StoreItem);
         newnodes: array of ref Node;
         msg := <- listench;
         if (msg != nil)
@@ -1341,13 +1398,12 @@ findnode(l: ref Local, targetnode: ref Node, uid: Key, rch: chan of ref Rmsg, re
     }
     l.callbacks.delete(msg.uid.text());
 }
-store(l: ref Local, where: ref Node, key: Key, data: array of byte)
+store(l: ref Local, where: ref Node, key: Key, value: ref StoreItem)
 {
     l.logevent("store", "Store called with key " + key.text());
     l.logevent("store", "Storing to  " + where.text());
-    datacrc := crc32(data);
     msg := ref Tmsg.Store(Key.generate(), l.node.addr, l.node.id,
-               where.id, key, array [0] of byte, datacrc);
+               where.id, key, value);
     ch := l.sendtmsg(where, msg);
     answer: ref Rmsg;
     killerch := chan of int;
@@ -1364,14 +1420,10 @@ store(l: ref Local, where: ref Node, key: Key, data: array of byte)
                     }
                     # check result code
                     case m.result {
-                        SCRCFail or SNotFound =>
-                            l.logevent("store", "Answer from " + m.senderID.text() + ": CRC fail or not found, sending data...");
-                            newmsg := ref Tmsg.Store(Key.generate(), l.node.addr, l.node.id,
-                                          where.id, key, data, 0);
-                            l.sendtmsg(where, newmsg);
-                            l.callbacks.delete(newmsg.uid.text()); # answer is not interesting
-                        SCRCOk =>
-                            l.logevent("store", "Answer from " + m.senderID.text() + ": CRC ok, no need to send");
+                        SSuccess or SAlreadyHave =>
+                            l.logevent("store", "Store to " + m.senderID.text() + ": success");
+                        SFail =>
+                            l.logevent("store", "Store to " + m.senderID.text() + ": fail");
                     } 
                 * =>
                     spawn timerreaper(killerch);
@@ -1399,10 +1451,11 @@ start(localaddr: string, bootstrap: array of ref Node, id: Key): ref Local
         return nil;
 
     ch := chan of ref Rmsg;
-    storeitem := ref StoreItem(array [0] of byte, 0, 0);
+    storeitem := list of {ref StoreItem(array [0] of byte, 0, 0)};
     store := hashtable->new(STORESIZE, storeitem);
-    server := ref Local(node, contacts, store, hashtable->new(CALLBACKSIZE, ch),
-        0, 0, 0, nil, c, chan of int);
+    localstore := hashtable->new(STORESIZE, storeitem);
+    server := ref Local(node, contacts, store, localstore,
+        hashtable->new(CALLBACKSIZE, ch), 0, 0, 0, nil, c, chan of int);
 
     server.contacts.local = server;
 

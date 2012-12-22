@@ -176,7 +176,7 @@ randomtmsg(): ref Tmsg
             l := random->randomint(random->NotQuiteRandom) & 16rFF;
             data := random->randombuf(random->NotQuiteRandom, l);
             ask := random->randomint(random->NotQuiteRandom) & 16rFF;
-            return ref Tmsg.Store(uid, remoteaddr, senderID, targetID, key, data, ask);
+            return ref Tmsg.Store(uid, remoteaddr, senderID, targetID, key, ref Dht->StoreItem(data, 0, 0));
         2 =>
             key := Key.generate();
             return ref Tmsg.FindNode(uid, remoteaddr, senderID, targetID, key);
@@ -219,7 +219,7 @@ randomrmsg(): ref Rmsg
                 nodes[i] = Node(Key.generate(), "randomnode", 123);
             l = random->randomint(random->NotQuiteRandom) & 16rFF;
             data := random->randombuf(random->NotQuiteRandom, l);
-            return ref Rmsg.FindValue(uid, remoteaddr, senderID, targetID, result, nodes, data);
+            return ref Rmsg.FindValue(uid, remoteaddr, senderID, targetID, nodes, list of {ref Dht->StoreItem(data, 0, 0)});
     }
 
     return nil;
@@ -573,9 +573,13 @@ interactivetest(addr: string)
                     key := Key.parse(hd args);
                     if (key == nil)
                         raise "fail:bad key";
-                    data := local.dhtfindvalue(*key);
-                    if (data != nil)
-                        sys->print("Something found: %s\n", string data);
+                    items := local.dhtfindvalue(*key);
+                    if (items != nil)
+                    {
+                        sys->print("Something found:\n");
+                        for (tail := items; tail != nil; tail = tl tail)
+                            sys->print("\t%s\n", string (hd tail).data);
+                    }
                     else
                         sys->print("Nothing was found\n");
                 "findkclosest" =>
