@@ -962,10 +962,11 @@ Local.processtmsg(l: self ref Local, buf: array of byte)
                 answer := ref Rmsg.Ping(m.uid, l.node.addr, l.node.id, m.senderID);
                 l.sendrmsg(sender, answer);
             Store =>
+                keytext := m.key.text();
                 result := SFail;
                 if (len m.value.data != 0)
                 {
-                    items := l.store.find(m.key.text());
+                    items := l.store.find(keytext);
                     if (items != nil)
                     {
                         if (lists->ismember(m.value, items))
@@ -973,12 +974,14 @@ Local.processtmsg(l: self ref Local, buf: array of byte)
                         else
                         {
                             items = m.value :: items;
+                            l.store.delete(keytext);
+                            l.store.insert(keytext, items);
                             result = SSuccess;
                         }
                     }
                     else
                     {
-                        l.store.insert(m.key.text(), list of {m.value});
+                        l.store.insert(keytext, list of {m.value});
                         result = SSuccess;
                     }
                 }
