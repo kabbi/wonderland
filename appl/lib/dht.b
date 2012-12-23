@@ -1057,7 +1057,7 @@ Local.timer(l: self ref Local)
             }
         }
 
-        # replicate storage
+        # replicate and expire storage
         storage := l.store.all();
         for (rest := storage; rest != nil; rest = tl rest)
         {
@@ -1066,21 +1066,36 @@ Local.timer(l: self ref Local)
             for (tail := itemlist; tail != nil; tail = tl tail)
             {
                 item := hd tail;
+                # replicate stage
                 if (curtime - item.lastupdate > REPLICATE_TIME)
                 {
                     item.lastupdate = curtime;
-                    nodes := l.findkclosest(key);
-                    for (i := 0; i < len nodes; i++)
-                        spawn store(l, nodes[i], key, item);
+                    storehelper(l, key, item);
+                }
+                # expire stage
+                if (curtime - item.publishtime > EXPIRE_TIME)
+                {
+                    newitemlist := lists->delete(item, itemlist);
+                    l.store.delete((hd rest).key);
+                    l.store.insert((hd rest).key, newitemlist);
                 }
             }
         }
 
-        # republish local storage 
-        # ...
-
-        # expire storage
-        # ...
+        # republish our own storage 
+        storage = l.ourstore.all();
+        for (rest = storage; rest != nil; rest = tl rest)
+        {
+            key := *Key.parse((hd rest).key[4:12]); # the key is string like 'key(...)'
+            itemlist := (hd rest).val;
+            for (tail := itemlist; tail != nil; tail = tl tail)
+            {
+                item := hd tail;
+                item.publishtime = daytime->now();
+                item.lastupdate = daytime->now();
+                storehelper(l, key, item);
+            }
+        }
     }
 }
 Local.syncthread(l: self ref Local)
@@ -1179,6 +1194,11 @@ Local.dhtfindvalue(l: self ref Local, id: Key): list of ref StoreItem
 Local.dhtstore(l: self ref Local, key: Key, data: array of byte)
 {
     item := ref StoreItem(data, daytime->now(), daytime->now());
+    # here we need to insert the record in the local storage
+    storehelper(l, key, item);
+}
+storehelper(l: self ref Local, key: Key, value: ref StoreItem)
+{
     nodes := l.findkclosest(key);
     for (i := 0; i < len nodes; i++)
         spawn store(l, nodes[i], key, item);
