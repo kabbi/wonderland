@@ -48,8 +48,7 @@ Dht: module
 	FVMax: con iota;
 
 	# Store result codes
-	SAlreadyHave,	# if data is already stored
-	SSuccess,		# if stored successfully
+	SSuccess,
 	SFail: con iota;
 
 	Node: adt {

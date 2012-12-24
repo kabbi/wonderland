@@ -55,7 +55,7 @@ TFindNode =>    H+KEY,      # no data
 RFindNode =>    H+LEN,      # nodes[4+]
 
 TFindValue =>   H+KEY,              # no data
-RFindValue =>   H+LEN+LEN,  # result[4] nodes[4+] value[4+]
+RFindValue =>   H+LEN+LEN,  # nodes[4+] value[4+]
 };
 
 badmodule(p: string)
@@ -969,8 +969,14 @@ Local.processtmsg(l: self ref Local, buf: array of byte)
                     items := l.store.find(keytext);
                     if (items != nil)
                     {
-                        if (lists->ismember(m.value, items))
-                            result = SAlreadyHave;
+			localvalue := lists->find(m.value, items);
+                        if (localvalue != nil)
+			{
+			    (hd localvalue).lastupdate = daytime->now();
+			    if ((hd localvalue).publishtime < m.value.publishtime)
+		 	        (hd localvalue).publishtime = m.value.publishtime;
+                            result = SSuccess;
+			}
                         else
                         {
                             items = m.value :: items;
@@ -1180,6 +1186,7 @@ Local.dhtfindnode(l: self ref Local, id: Key, nodes: array of ref Node): ref Nod
     return node;
 }
 Local.dhtfindvalue(l: self ref Local, id: Key): list of ref StoreItem
+# Return value: should be list of array of byte?
 {
     l.logevent("dhtfindvalue", "Started to search for value " + id.text());
     nodes := toref(l.contacts.findclosenodes(id));
@@ -1194,14 +1201,37 @@ Local.dhtfindvalue(l: self ref Local, id: Key): list of ref StoreItem
 Local.dhtstore(l: self ref Local, key: Key, data: array of byte)
 {
     item := ref StoreItem(data, daytime->now(), daytime->now());
-    # here we need to insert the record in the local storage
+    keytext := key.text();
+    if (len data != 0)
+    {
+        items := l.ourstore.find(keytext);
+        if (items != nil)
+        {
+            localvalue := lists->find(item, items);
+            if (localvalue != nil)
+	    {
+	        (hd localvalue).lastupdate = daytime->now();
+    	        (hd localvalue).publishtime = daytime->now();
+ 	    }
+            else
+            {
+                items = item :: items;
+                l.ourstore.delete(keytext);
+                l.ourstore.insert(keytext, items);
+            }
+	}
+        else
+        {
+            l.ourstore.insert(keytext, list of {item});
+        }
+    }
     storehelper(l, key, item);
 }
-storehelper(l: self ref Local, key: Key, value: ref StoreItem)
+storehelper(l: ref Local, key: Key, value: ref StoreItem)
 {
     nodes := l.findkclosest(key);
     for (i := 0; i < len nodes; i++)
-        spawn store(l, nodes[i], key, item);
+        spawn store(l, nodes[i], key, value);
 }
 Local.findkclosest(l: self ref Local, id: Key): array of ref Node
 {
@@ -1443,7 +1473,7 @@ store(l: ref Local, where: ref Node, key: Key, value: ref StoreItem)
                     }
                     # check result code
                     case m.result {
-                        SSuccess or SAlreadyHave =>
+                        SSuccess =>
                             l.logevent("store", "Store to " + m.senderID.text() + ": success");
                         SFail =>
                             l.logevent("store", "Store to " + m.senderID.text() + ": fail");
