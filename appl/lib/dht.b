@@ -727,7 +727,7 @@ Bucket.getnodes(b: self ref Bucket, size: int): array of Node
     if (len b.nodes >= size)
         return b.nodes[len b.nodes - size:];
     else
-	return b.nodes;
+        return b.nodes;
 }
 Bucket.findnode(b: self ref Bucket, id: Key): int
 {
@@ -969,14 +969,14 @@ Local.processtmsg(l: self ref Local, buf: array of byte)
                     items := l.store.find(keytext);
                     if (items != nil)
                     {
-			localvalue := lists->find(m.value, items);
+                        localvalue := lists->find(m.value, items);
                         if (localvalue != nil)
-			{
-			    (hd localvalue).lastupdate = daytime->now();
-			    if ((hd localvalue).publishtime < m.value.publishtime)
-		 	        (hd localvalue).publishtime = m.value.publishtime;
+                        {
+                            (hd localvalue).lastupdate = daytime->now();
+                            if ((hd localvalue).publishtime < m.value.publishtime)
+                                (hd localvalue).publishtime = m.value.publishtime;
                             result = SSuccess;
-			}
+                        }
                         else
                         {
                             items = m.value :: items;
@@ -1001,7 +1001,7 @@ Local.processtmsg(l: self ref Local, buf: array of byte)
                 nodes := array [0] of Node;
                 value: list of ref StoreItem;
                 items := l.store.find(m.key.text());
-                if (items == nil)
+                if (items == nil || len items == 0)
                     nodes = l.contacts.findclosenodes(m.key);
                 else
                     value = items;
@@ -1083,7 +1083,8 @@ Local.timer(l: self ref Local)
                 {
                     newitemlist := lists->delete(item, itemlist);
                     l.store.delete((hd rest).key);
-                    l.store.insert((hd rest).key, newitemlist);
+                    if (len newitemlist > 0)
+                        l.store.insert((hd rest).key, newitemlist);
                 }
             }
         }
@@ -1097,9 +1098,12 @@ Local.timer(l: self ref Local)
             for (tail := itemlist; tail != nil; tail = tl tail)
             {
                 item := hd tail;
-                item.publishtime = daytime->now();
-                item.lastupdate = daytime->now();
-                storehelper(l, key, item);
+                if (curtime - item.publishtime > REPUBLISH_TIME)
+                {
+                    item.publishtime = daytime->now();
+                    item.lastupdate = daytime->now();
+                    storehelper(l, key, item);       
+                }
             }
         }
     }
@@ -1209,17 +1213,17 @@ Local.dhtstore(l: self ref Local, key: Key, data: array of byte)
         {
             localvalue := lists->find(item, items);
             if (localvalue != nil)
-	    {
-	        (hd localvalue).lastupdate = daytime->now();
-    	        (hd localvalue).publishtime = daytime->now();
- 	    }
+            {
+                (hd localvalue).lastupdate = daytime->now();
+                (hd localvalue).publishtime = daytime->now();
+            }
             else
             {
                 items = item :: items;
                 l.ourstore.delete(keytext);
                 l.ourstore.insert(keytext, items);
             }
-	}
+        }
         else
         {
             l.ourstore.insert(keytext, list of {item});
