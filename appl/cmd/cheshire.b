@@ -73,7 +73,7 @@ writestring(m: ref Tmsg.Write): (ref Rmsg.Write, string)
 
 init(nil: ref Draw->Context, args: list of string)
 {
-    if (len args < 2)
+    if (len args < 1)
         raise "fail:local address required as first argument";
 	# loading modules
 	sys = load Sys Sys->PATH;
@@ -107,7 +107,7 @@ init(nil: ref Draw->Context, args: list of string)
     bigkey->init();
 
     localkey = Key.generate();
-    localaddr = args[1];
+    localaddr = hd args;
     # find out the current user to make it the owner of all folders
     user = getcuruser();
 
@@ -122,19 +122,19 @@ init(nil: ref Draw->Context, args: list of string)
 	tree.create(Qroot, dir("cheshire", Sys->DMDIR | 8r555, Qcheshire));
 	tree.create(Qcheshire, dir("welcome", 8r555, Qwelcome));
 	tree.create(Qcheshire, dir("addserver", 8r777, Qaddserver));
-    if (len args == 2)
+    if (len args < 2)
 	    tree.create(Qcheshire, dir("bootstrap", 8r755, Qbootstrap));
     else
     {
-    	fd := sys->open(args[2], Sys->OREAD);
+    	fd := sys->open(hd tl args, Sys->OREAD);
         if (fd == nil)
             raise "fail:bootstrap file not found";
         buf := array [8192] of byte;
         readbytes := sys->read(fd, buf, len buf);
         if (readbytes <= 0)
             raise "fail:bootstrap file not found";
-    	straplist = strapparse(buf);
-        local = start(localaddr, straplist, localkey);
+    	straplist = strapparse(string buf);
+        local = dht->start(localaddr, straplist, localkey);
     }
 	Qlast = Qbootstrap + big 1;
 
@@ -190,9 +190,10 @@ handlemsg(gm: ref Styx->Tmsg, srv: ref Styxserver, nil: ref Tree): string
 			}
             else if (c.path == Qbootstrap && straplist == nil)
             {
+            	request: string;
 				(answer, request) = writestring(m);
                 straplist = strapparse(request);
-                local = start(localaddr, straplist, localkey);
+                local = dht->start(localaddr, straplist, localkey);
             }
 			else
 				answer = ref Rmsg.Error(m.tag, Eperm);
@@ -222,14 +223,15 @@ getcuruser(): string
 
 strapparse(s: string): array of ref Node
 {
-    (nil, strings) := tokenize(s, "\n");
+    (nil, strings) := sys->tokenize(s, "\n");
     ret := array [len strings] of ref Node;
-    for (i := 0; i < len strings; ++i)
+    i := 0;
+    for (it := strings; it != nil; it = tl it)
     {
-        (nil, blocks) := tokenize(strings[i], " ");
+        (nil, blocks) := sys->tokenize(hd it, " ");
         if (len blocks != 2)
             raise "fail:malformed bootstrap file";
-        ret[i] = Node(Key.parse(blocks[0]), blocks[1], 0);
+        ret[i++] = ref Node(*Key.parse(hd blocks), hd tl blocks, 0);
     }
     return ret;
 }
