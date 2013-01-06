@@ -37,9 +37,13 @@ badmodule(p: string)
 	raise "fail:bad module";
 }
 
+straplist: array of ref Node;
+
 tree: ref Tree;
 nav: ref Navigator;
 user: string;
+localaddr: string;
+localkey: Key;
 
 Qroot, Qcheshire, Qwelcome, Qaddserver, Qbootstrap: con big iota;
 Qlast: big;
@@ -67,8 +71,10 @@ writestring(m: ref Tmsg.Write): (ref Rmsg.Write, string)
 	return (r, string m.data);
 }
 
-init(nil: ref Draw->Context, nil: list of string)
+init(nil: ref Draw->Context, args: list of string)
 {
+    if (len args < 2)
+        raise "fail:local address required as first argument";
 	# loading modules
 	sys = load Sys Sys->PATH;
 	
@@ -100,6 +106,8 @@ init(nil: ref Draw->Context, nil: list of string)
         badmodule(Bigkey->PATH);
     bigkey->init();
 
+    localkey = Key.generate();
+    localaddr = args[1];
     # find out the current user to make it the owner of all folders
     user = getcuruser();
 
@@ -114,8 +122,21 @@ init(nil: ref Draw->Context, nil: list of string)
 	tree.create(Qroot, dir("cheshire", Sys->DMDIR | 8r555, Qcheshire));
 	tree.create(Qcheshire, dir("welcome", 8r555, Qwelcome));
 	tree.create(Qcheshire, dir("addserver", 8r777, Qaddserver));
-	tree.create(Qcheshire, dir("bootstrap", 8r755, Qbootstrap));
-	Qlast = Qaddserver + big 1;
+    if (len args == 2)
+	    tree.create(Qcheshire, dir("bootstrap", 8r755, Qbootstrap));
+    else
+    {
+    	fd := sys->open(args[2], Sys->OREAD);
+        if (fd == nil)
+            raise "fail:bootstrap file not found";
+        buf := array [8192] of byte;
+        readbytes := sys->read(fd, buf, len buf);
+        if (readbytes <= 0)
+            raise "fail:bootstrap file not found";
+    	straplist = strapparse(buf);
+        local = start(localaddr, straplist, localkey);
+    }
+	Qlast = Qbootstrap + big 1;
 
 	# starting message processing loop
 	for (;;) {
@@ -158,7 +179,7 @@ handlemsg(gm: ref Styx->Tmsg, srv: ref Styxserver, nil: ref Tree): string
 		(c, err) := srv.canwrite(m);
 		if(c == nil)
 			return err;
-		if((c.qtype & Sys->QTDIR) == 0) # then reading files
+		if((c.qtype & Sys->QTDIR) == 0) # then writing files
 		{
 			answer: ref Rmsg;
 			if (c.path == Qaddserver)
@@ -167,6 +188,12 @@ handlemsg(gm: ref Styx->Tmsg, srv: ref Styxserver, nil: ref Tree): string
 				(answer, request) = writestring(m);
 				c.data = array of byte ("You typed: " + request);
 			}
+            else if (c.path == Qbootstrap && straplist == nil)
+            {
+				(answer, request) = writestring(m);
+                straplist = strapparse(request);
+                local = start(localaddr, straplist, localkey);
+            }
 			else
 				answer = ref Rmsg.Error(m.tag, Eperm);
 			srv.reply(answer);
@@ -187,10 +214,24 @@ getcuruser(): string
 	if (fd == nil)
 		return "";
 	buf := array [8192] of byte;
-	readbytes := sys->read(fd, buf, 8192);
+	readbytes := sys->read(fd, buf, len buf);
 	if (readbytes <= 0)
 		return "";
 	return string buf[:readbytes];
+}
+
+strapparse(s: string): array of ref Node
+{
+    (nil, strings) := tokenize(s, "\n");
+    ret := array [len strings] of ref Node;
+    for (i := 0; i < len strings; ++i)
+    {
+        (nil, blocks) := tokenize(strings[i], " ");
+        if (len blocks != 2)
+            raise "fail:malformed bootstrap file";
+        ret[i] = Node(Key.parse(blocks[0]), blocks[1], 0);
+    }
+    return ret;
 }
 
 Blankdir: Sys->Dir;
