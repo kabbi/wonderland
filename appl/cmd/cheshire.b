@@ -7,8 +7,22 @@ include "styx.m";
 	Rmsg, Tmsg: import styx;
 include "styxservers.m";
 	styxservers: Styxservers;
-	Ebadfid, Enotfound, Eopen, Einuse: import Styxservers;
+	Ebadfid, Enotfound, Eopen, Einuse, Eperm: import Styxservers;
 	Styxserver, readbytes, Navigator, Fid: import styxservers;
+include "keyring.m";
+include "security.m";
+    random: Random;
+include "daytime.m";
+    daytime: Daytime;
+include "bigkey.m";
+    bigkey: Bigkey;
+    Key: import bigkey;
+include "hashtable.m";
+    hashtable: Hashtable;
+    HashTable: import hashtable;
+include "dht.m";
+	dht: Dht;
+	Node, Local, StoreItem: import dht;
 
 	nametree: Nametree;
 	Tree: import nametree;
@@ -25,10 +39,34 @@ badmodule(p: string)
 
 tree: ref Tree;
 nav: ref Navigator;
+user: string;
 
-uniq: int;
+Qroot, Qcheshire, Qwelcome, Qaddserver, Qbootstrap: con big iota;
+Qlast: big;
 
-Qroot, Qwelcome, Qnothing: con big iota;
+local: ref Local;
+
+writebytes(m: ref Tmsg.Write, d: array of byte): ref Rmsg.Write
+{
+	r := ref Rmsg.Write(m.tag, 0);
+	if(m.offset >= big len d || m.offset < big 0)
+		return r;
+	offset := int m.offset;
+	e := offset + len m.data;
+	if(e > len d)
+		e = len d;
+	for (i := offset; i < e; i++)
+		d[i] = m.data[i];
+	r.count = len m.data;
+	return r;
+}
+
+writestring(m: ref Tmsg.Write): (ref Rmsg.Write, string)
+{
+	r := ref Rmsg.Write(m.tag, len m.data);
+	return (r, string m.data);
+}
+
 init(nil: ref Draw->Context, nil: list of string)
 {
 	# loading modules
@@ -43,11 +81,27 @@ init(nil: ref Draw->Context, nil: list of string)
 	if (styxservers == nil)
 		badmodule(Styxservers->PATH);
 	styxservers->init(styx);
- 
 	nametree = load Nametree Nametree->PATH;
 	if (nametree == nil)
 		badmodule(Nametree->PATH);
 	nametree->init();
+    daytime = load Daytime Daytime->PATH;
+    if (daytime == nil)
+        badmodule(Daytime->PATH);
+    random = load Random Random->PATH;
+    if (random == nil)
+        badmodule(Random->PATH);
+    dht = load Dht Dht->PATH;
+    if (dht == nil)
+        badmodule(Dht->PATH);
+    dht->init();
+    bigkey = load Bigkey Bigkey->PATH;
+    if (bigkey == nil)
+        badmodule(Bigkey->PATH);
+    bigkey->init();
+
+    # find out the current user to make it the owner of all folders
+    user = getcuruser();
 
 	# creating navigators and servers
 	navop: chan of ref Styxservers->Navop;
@@ -57,8 +111,11 @@ init(nil: ref Draw->Context, nil: list of string)
 
 	# creating file tree
 	tree.create(Qroot, dir(".", Sys->DMDIR | 8r555, Qroot));
-	tree.create(Qroot, dir("Hello! Welcome to wonderland!", 8r555, Qwelcome));
-	tree.create(Qroot, dir("No wonders right now, more content later...", 8r555, Qnothing));
+	tree.create(Qroot, dir("cheshire", Sys->DMDIR | 8r555, Qcheshire));
+	tree.create(Qcheshire, dir("welcome", 8r555, Qwelcome));
+	tree.create(Qcheshire, dir("addserver", 8r777, Qaddserver));
+	tree.create(Qcheshire, dir("bootstrap", 8r755, Qbootstrap));
+	Qlast = Qaddserver + big 1;
 
 	# starting message processing loop
 	for (;;) {
@@ -78,10 +135,62 @@ handlemsg(gm: ref Styx->Tmsg, srv: ref Styxserver, nil: ref Tree): string
 	pick m := gm {
 	# some processing will be here some day...
 	# now just let the server handle everything
+	Read =>
+		(c, err) := srv.canread(m);
+		if(c == nil)
+			return err;
+		if((c.qtype & Sys->QTDIR) == 0) # then reading files
+		{
+			answer: ref Rmsg;
+			if (c.data != nil && len c.data > 0)
+				answer = styxservers->readbytes(m, c.data);
+			else if (c.path == Qwelcome)
+				answer = styxservers->readstr(m, "Hello, and welcome to the Wonderland!\n");
+			else if (c.path == Qaddserver)
+				answer = styxservers->readstr(m, "Write something like <serveraddr> <serverpath>\n");
+			else
+				answer = ref Rmsg.Error(m.tag, Enotfound);
+			srv.reply(answer);
+		}
+		else
+			srv.read(m);
+	Write =>
+		(c, err) := srv.canwrite(m);
+		if(c == nil)
+			return err;
+		if((c.qtype & Sys->QTDIR) == 0) # then reading files
+		{
+			answer: ref Rmsg;
+			if (c.path == Qaddserver)
+			{
+				request: string;
+				(answer, request) = writestring(m);
+				c.data = array of byte ("You typed: " + request);
+			}
+			else
+				answer = ref Rmsg.Error(m.tag, Eperm);
+			srv.reply(answer);
+		}
+	#Walk =>
+	#	tree.create(Qroot, dir(, Sys->DMDIR | 8r555, Qlast));
+	#	Qlast = Qlast + big 1;
+	#	srv.walk(m);
 	* =>
 		srv.default(gm);
 	}
 	return nil;
+}
+
+getcuruser(): string
+{
+	fd := sys->open("/dev/user", Sys->OREAD);
+	if (fd == nil)
+		return "";
+	buf := array [8192] of byte;
+	readbytes := sys->read(fd, buf, 8192);
+	if (readbytes <= 0)
+		return "";
+	return string buf[:readbytes];
 }
 
 Blankdir: Sys->Dir;
@@ -89,7 +198,7 @@ dir(name: string, perm: int, qid: big): Sys->Dir
 {
 	d := Blankdir;
 	d.name = name;
-	d.uid = "me";
+	d.uid = user;
 	d.gid = "me";
 	d.qid.path = qid;
 	if (perm & Sys->DMDIR)
