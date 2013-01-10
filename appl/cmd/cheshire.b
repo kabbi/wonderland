@@ -73,7 +73,8 @@ writestring(m: ref Tmsg.Write): (ref Rmsg.Write, string)
 
 init(nil: ref Draw->Context, args: list of string)
 {
-    if (len args < 1)
+	args = tl args;
+    if (len args == 0)
         raise "fail:local address required as first argument";
 	# loading modules
 	sys = load Sys Sys->PATH;
@@ -122,7 +123,7 @@ init(nil: ref Draw->Context, args: list of string)
 	tree.create(Qroot, dir("cheshire", Sys->DMDIR | 8r555, Qcheshire));
 	tree.create(Qcheshire, dir("welcome", 8r555, Qwelcome));
 	tree.create(Qcheshire, dir("addserver", 8r777, Qaddserver));
-    if (len args < 2)
+    if (len args == 1)
 	    tree.create(Qcheshire, dir("bootstrap", 8r755, Qbootstrap));
     else
     {
