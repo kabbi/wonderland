@@ -46,11 +46,26 @@ localaddr: string;
 localkey: Key;
 
 stderr: ref Sys->FD;
+dhtlogfd: ref Sys->FD;
+mainpid: int;
 
-Qroot, Qcheshire, Qwelcome, Qaddserver, Qbootstrap: con big iota;
+Qroot, Qcheshire, Qwelcome, Qaddserver, Qbootstrap, Qdhtlog, Qlastpath: con big iota;
 Qlast: big;
 
 local: ref Local;
+
+readfile(m: ref Tmsg.Read, fd: ref Sys->FD): ref Rmsg.Read
+{
+	r := ref Rmsg.Read(m.tag, nil);
+	if (fd == nil)
+		return r;
+	buf := array [m.count] of byte;
+	readbytes := sys->pread(fd, buf, len buf, m.offset);
+	if (readbytes == 0)
+		return r;
+	r.data = buf[:readbytes];
+	return r;
+}
 
 writebytes(m: ref Tmsg.Write, d: array of byte): ref Rmsg.Write
 {
@@ -71,6 +86,23 @@ writestring(m: ref Tmsg.Write): (ref Rmsg.Write, string)
 {
 	r := ref Rmsg.Write(m.tag, len m.data);
 	return (r, string m.data);
+}
+
+startdht()
+{
+	dhtlogfd = sys->create(sys->sprint("/tmp/%ddhtlog.log", mainpid), Sys->ORDWR, 8r700);
+    local = dht->start(localaddr, straplist, localkey);
+    if (local == nil)
+    {
+    	sys->fprint(stderr, "Very bad, dht init error: %r\n");
+    	raise sys->sprint("fail:dht:%r");
+    }
+    if (dhtlogfd != nil)
+    {
+    	local.setlogfd(dhtlogfd);
+    	sys->fprint(stderr, "Dht logging started\n");
+    }
+	sys->fprint(stderr, "Dht started\n");
 }
 
 init(nil: ref Draw->Context, args: list of string)
@@ -114,6 +146,7 @@ init(nil: ref Draw->Context, args: list of string)
     # find out the current user to make it the owner of all folders
     user = getcuruser();
     stderr = sys->fildes(2);
+    mainpid = sys->pctl(0, nil);
 
 	# creating navigators and servers
     sys->fprint(stderr, "Creating styxservers\n");
@@ -123,11 +156,13 @@ init(nil: ref Draw->Context, args: list of string)
 	(tchan, srv) := Styxserver.new(sys->fildes(0), nav, Qroot);
 
 	# creating file tree
+	# TODO: fix permissions
     sys->fprint(stderr, "Setting up nametree\n");
 	tree.create(Qroot, dir(".", Sys->DMDIR | 8r555, Qroot));
 	tree.create(Qroot, dir("cheshire", Sys->DMDIR | 8r555, Qcheshire));
 	tree.create(Qcheshire, dir("welcome", 8r555, Qwelcome));
 	tree.create(Qcheshire, dir("addserver", 8r777, Qaddserver));
+	tree.create(Qcheshire, dir("dhtlog", 8r555, Qdhtlog));
     if (len args == 1)
 	    tree.create(Qcheshire, dir("bootstrap", 8r755, Qbootstrap));
     else
@@ -140,11 +175,10 @@ init(nil: ref Draw->Context, args: list of string)
         if (readbytes <= 0)
             raise "fail:bootstrap file not found";
     	sys->fprint(stderr, "Parsing bootstrap\n");
-    	straplist = strapparse(string buf);
-        local = dht->start(localaddr, straplist, localkey);
-    	sys->fprint(stderr, "Dht started\n");
+    	straplist = strapparse(string buf[:readbytes]);
+    	startdht();
     }
-	Qlast = Qbootstrap + big 1;
+	Qlast = Qlastpath;
 
     sys->fprint(stderr, "Cheshire is up and running!\n");
 
@@ -181,6 +215,8 @@ handlemsg(gm: ref Styx->Tmsg, srv: ref Styxserver, nil: ref Tree): string
 				answer = styxservers->readstr(m, "Hello, and welcome to the Wonderland!\n");
 			else if (c.path == Qaddserver)
 				answer = styxservers->readstr(m, "Write something like <serveraddr> <serverpath>\n");
+			else if (c.path == Qdhtlog)
+				answer = readfile(m, dhtlogfd);
 			else
 				answer = ref Rmsg.Error(m.tag, Enotfound);
 			srv.reply(answer);
@@ -205,8 +241,7 @@ handlemsg(gm: ref Styx->Tmsg, srv: ref Styxserver, nil: ref Tree): string
             	request: string;
 				(answer, request) = writestring(m);
                 straplist = strapparse(request);
-                local = dht->start(localaddr, straplist, localkey);
-    			sys->fprint(stderr, "Dht started\n");
+                startdht();
             }
 			else
 				answer = ref Rmsg.Error(m.tag, Eperm);
@@ -241,6 +276,7 @@ strapparse(s: string): array of ref Node
     i := 0;
     for (it := strings; it != nil; it = tl it)
     {
+    	sys->fprint(stderr, "Parsing bootstrap entry: %s\n", hd it);
         (nil, blocks) := sys->tokenize(hd it, " ");
         if (blocks == nil || len blocks != 2 || (hd blocks)[:1] == "#")
             continue;
