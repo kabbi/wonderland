@@ -45,6 +45,8 @@ user: string;
 localaddr: string;
 localkey: Key;
 
+stderr: ref Sys->FD;
+
 Qroot, Qcheshire, Qwelcome, Qaddserver, Qbootstrap: con big iota;
 Qlast: big;
 
@@ -111,14 +113,17 @@ init(nil: ref Draw->Context, args: list of string)
     localaddr = hd args;
     # find out the current user to make it the owner of all folders
     user = getcuruser();
+    stderr = sys->fildes(2);
 
 	# creating navigators and servers
+    sys->fprint(stderr, "Creating styxservers\n");
 	navop: chan of ref Styxservers->Navop;
 	(tree, navop) = nametree->start();
 	nav = Navigator.new(navop);
 	(tchan, srv) := Styxserver.new(sys->fildes(0), nav, Qroot);
 
 	# creating file tree
+    sys->fprint(stderr, "Setting up nametree\n");
 	tree.create(Qroot, dir(".", Sys->DMDIR | 8r555, Qroot));
 	tree.create(Qroot, dir("cheshire", Sys->DMDIR | 8r555, Qcheshire));
 	tree.create(Qcheshire, dir("welcome", 8r555, Qwelcome));
@@ -134,16 +139,22 @@ init(nil: ref Draw->Context, args: list of string)
         readbytes := sys->read(fd, buf, len buf);
         if (readbytes <= 0)
             raise "fail:bootstrap file not found";
+    	sys->fprint(stderr, "Parsing bootstrap\n");
     	straplist = strapparse(string buf);
         local = dht->start(localaddr, straplist, localkey);
+    	sys->fprint(stderr, "Dht started\n");
     }
 	Qlast = Qbootstrap + big 1;
+
+    sys->fprint(stderr, "Cheshire is up and running!\n");
 
 	# starting message processing loop
 	for (;;) {
 		gm := <-tchan;
 		if (gm == nil) {
 			tree.quit();
+			if (local != nil)
+				local.destroy();
 			exit;
 		}
 		e := handlemsg(gm, srv, tree);
@@ -195,6 +206,7 @@ handlemsg(gm: ref Styx->Tmsg, srv: ref Styxserver, nil: ref Tree): string
 				(answer, request) = writestring(m);
                 straplist = strapparse(request);
                 local = dht->start(localaddr, straplist, localkey);
+    			sys->fprint(stderr, "Dht started\n");
             }
 			else
 				answer = ref Rmsg.Error(m.tag, Eperm);
@@ -230,11 +242,11 @@ strapparse(s: string): array of ref Node
     for (it := strings; it != nil; it = tl it)
     {
         (nil, blocks) := sys->tokenize(hd it, " ");
-        if (len blocks != 2)
-            raise "fail:malformed bootstrap file";
+        if (blocks == nil || len blocks != 2 || (hd blocks)[:1] == "#")
+            continue;
         ret[i++] = ref Node(*Key.parse(hd blocks), hd tl blocks, 0);
     }
-    return ret;
+    return ret[:i];
 }
 
 Blankdir: Sys->Dir;
