@@ -10,8 +10,11 @@ include "styxservers.m";
 	Ebadfid, Enotfound, Eopen, Einuse, Eperm: import Styxservers;
 	Styxserver, readbytes, Navigator, Fid: import styxservers;
 include "keyring.m";
+	keyring: Keyring;
 include "security.m";
     random: Random;
+include "string.m";
+	str: String;
 include "daytime.m";
     daytime: Daytime;
 include "bigkey.m";
@@ -27,9 +30,148 @@ include "dht.m";
 	nametree: Nametree;
 	Tree: import nametree;
 
+VStyxServer,
+VFolder,
+Vmax: con 100 + iota;
+
+# DhtValue adt and serialisation
+
+BIT32SZ: con 4;
+parray(a: array of byte, o: int, sa: array of byte): int
+{
+    n := len sa;
+    p32(a, o, n);
+    a[o+BIT32SZ:] = sa;
+    return o+BIT32SZ+n;
+}
+pstring(a: array of byte, o: int, s: string): int
+{
+    sa := array of byte s;
+    return parray(a, o, sa);
+}
+p32(a: array of byte, o: int, v: int): int
+{
+    a[o] = byte v;
+    a[o+1] = byte (v>>8);
+    a[o+2] = byte (v>>16);
+    a[o+3] = byte (v>>24);
+    return o+BIT32SZ;
+}
+g32(a: array of byte, o: int): (int, int)
+{
+    if (o + BIT32SZ > len a)
+        raise "fail: g32: malformed packet";
+    number := (((((int a[o+3] << 8) | int a[o+2]) << 8) | int a[o+1]) << 8) | int a[o];
+    return (number, o + BIT32SZ);
+}
+gstring(a: array of byte, o: int): (string, int)
+{
+    (str, l) := garray(a, o);
+    return (string str, l);
+}
+garray(a: array of byte, o: int): (array of byte, int)
+{
+    if(o < 0 || o+BIT32SZ > len a)
+        raise "fail: garray: malformed packet";
+    l: int;
+    (l, o) = g32(a, o);
+    e := o+l;
+    if(e > len a || l < 0)
+        raise "fail: garray: malformed packet";
+    return (a[o:e], e);
+}
+
 Cheshire: module {
 	init: fn(nil: ref Draw->Context, argv: list of string);
 };
+DhtValue: adt {
+	pick {
+	StyxServer =>
+		name: string;
+		addr: string;
+	Folder =>
+		name: string;
+	#Program =>
+	#	disCode: array of byte;
+	}
+
+	unpack: fn(a: array of byte): (int, ref DhtValue);
+	pack: fn(nil: self ref DhtValue): array of byte;
+	packedsize: fn(nil: self ref DhtValue): int;
+	text: fn(nil: self ref DhtValue): string;
+	mtype: fn(nil: self ref DhtValue): int;
+};
+
+vtag2type := array[] of {
+tagof DhtValue.StyxServer => VStyxServer,
+tagof DhtValue.Folder => VFolder
+};
+DhtValue.mtype(v: self ref DhtValue): int
+{
+    return vtag2type[tagof v];
+}
+DhtValue.packedsize(v: self ref DhtValue): int
+{
+	size := 1; # one byte reserved for type info
+	pick vv := v {
+	StyxServer =>
+		size += BIT32SZ;
+		size += len array of byte vv.name;
+		size += BIT32SZ;
+		size += len array of byte vv.addr;
+	Folder =>
+		size += BIT32SZ;
+		size += len array of byte vv.name;
+	}
+	return size;
+}
+DhtValue.pack(v: self ref DhtValue): array of byte
+{
+	o := 0;
+	a := array [v.packedsize()] of byte;
+	a[o++] = byte v.mtype();
+    pick vv := v {
+    StyxServer =>
+    	o = pstring(a, o, vv.name);
+    	o = pstring(a, o, vv.addr);
+    Folder =>
+    	o = pstring(a, o, vv.name);
+    * =>
+    	raise "fail:DhtValue.pack:bad value type";
+    }
+    return a;
+}
+DhtValue.unpack(a: array of byte): (int, ref DhtValue)
+{
+	o := 1;
+	mtype := a[0];
+	case int mtype {
+	VStyxServer =>
+		name, addr: string;
+		(name, o) = gstring(a, o);
+		(addr, o) = gstring(a, o);
+		return (len a, ref DhtValue.StyxServer(name, addr));
+	VFolder =>
+		name: string;
+		(name, o) = gstring(a, o);
+		return (len a, ref DhtValue.Folder(name));
+	* =>
+		raise "fail:DhtValue.unpack:bad value type";
+	}
+}
+DhtValue.text(v: self ref DhtValue): string
+{
+	if (v == nil)
+		return "DhtValue(nil)";
+	pick vv := v {
+	StyxServer =>
+		return sys->sprint("DhtValue.StyxServer(%s, %s)", vv.name, vv.addr);
+	Folder =>
+		return sys->sprint("DhtValue.Folder(%s)", vv.name);
+	* =>
+		return "DhtValue.unknown()";
+	}
+}
 
 badmodule(p: string)
 {
@@ -49,10 +191,13 @@ stderr: ref Sys->FD;
 dhtlogfd: ref Sys->FD;
 mainpid: int;
 
-Qroot, Qcheshire, Qwelcome, Qaddserver, Qbootstrap, Qdhtlog, Qlastpath: con big iota;
+Qroot, Qcheshire, Qwelcome, Qaddserver, Qbootstrap,
+Qdhtlog, Qlastpath: con big iota;
 Qlast: big;
 
 local: ref Local;
+
+# some styx helpers
 
 readfile(m: ref Tmsg.Read, fd: ref Sys->FD): ref Rmsg.Read
 {
@@ -88,9 +233,12 @@ writestring(m: ref Tmsg.Write): (ref Rmsg.Write, string)
 	return (r, string m.data);
 }
 
+# main cheshire implementation
+
 startdht()
 {
-	dhtlogfd = sys->create(sys->sprint("/tmp/%ddhtlog.log", mainpid), Sys->ORDWR, 8r700);
+	dhtlogname := sys->sprint("/tmp/%ddhtlog.log", mainpid);
+	dhtlogfd = sys->create(dhtlogname, Sys->ORDWR, 8r700);
     local = dht->start(localaddr, straplist, localkey);
     if (local == nil)
     {
@@ -132,6 +280,12 @@ init(nil: ref Draw->Context, args: list of string)
     random = load Random Random->PATH;
     if (random == nil)
         badmodule(Random->PATH);
+    keyring = load Keyring Keyring->PATH;
+    if (keyring == nil)
+    	badmodule(Keyring->PATH);
+    str = load String String->PATH;
+    if (str == nil)
+    	badmodule(String->PATH);
     dht = load Dht Dht->PATH;
     if (dht == nil)
         badmodule(Dht->PATH);
@@ -186,6 +340,7 @@ init(nil: ref Draw->Context, args: list of string)
 	for (;;) {
 		gm := <-tchan;
 		if (gm == nil) {
+			sys->fprint(stderr, "Walking away...\n");
 			tree.quit();
 			if (local != nil)
 				local.destroy();
@@ -202,6 +357,8 @@ handlemsg(gm: ref Styx->Tmsg, srv: ref Styxserver, nil: ref Tree): string
 	pick m := gm {
 	# some processing will be here some day...
 	# now just let the server handle everything
+	Readerror =>
+		sys->fprint(stderr, "Some read error: %s\n", m.error);
 	Read =>
 		(c, err) := srv.canread(m);
 		if(c == nil)
@@ -234,7 +391,8 @@ handlemsg(gm: ref Styx->Tmsg, srv: ref Styxserver, nil: ref Tree): string
 			{
 				request: string;
 				(answer, request) = writestring(m);
-				c.data = array of byte ("You typed: " + request);
+				result := serverparse(request);
+				c.data = array of byte result;
 			}
             else if (c.path == Qbootstrap && straplist == nil)
             {
@@ -247,10 +405,19 @@ handlemsg(gm: ref Styx->Tmsg, srv: ref Styxserver, nil: ref Tree): string
 				answer = ref Rmsg.Error(m.tag, Eperm);
 			srv.reply(answer);
 		}
-	#Walk =>
-	#	tree.create(Qroot, dir(, Sys->DMDIR | 8r555, Qlast));
-	#	Qlast = Qlast + big 1;
-	#	srv.walk(m);
+	Walk =>
+		#tree.create(Qroot, dir(, Sys->DMDIR | 8r555, Qlast));
+		#Qlast = Qlast + big 1;
+		fid := srv.walk(m);
+		# check if we've walked into a dir
+		#if (fid != nil && (fid.qtype & Sys->QTDIR) > 0)
+		#{
+		#	(dir, err) := nav.stat(fid.path);
+		#	if (dir != nil)
+		#		sys->fprint(stderr, "walked into: %s\n", tree.getpath(fid.path)); 
+		#	else
+		#		sys->fprint(stderr, "some walk error: %s\n", err);
+		#}
 	* =>
 		srv.default(gm);
 	}
@@ -267,6 +434,47 @@ getcuruser(): string
 	if (readbytes <= 0)
 		return "";
 	return string buf[:readbytes];
+}
+
+serverparse(s: string): string
+{
+	(nil, strings) := sys->tokenize(s, "\n");
+	for (it := strings; it != nil; it = tl it)
+	{
+		sys->fprint(stderr, "Parsing addserver entry: %s\n", hd it);
+		(addr, fullpath) := str->splitl(hd it, " ");
+		if (fullpath == nil || addr[:1] == "#")
+			continue;
+		fullpath = fullpath[1:]; # skip one space
+		(path, name) := str->splitr(fullpath, "/");
+		if (path == nil)
+			path = "/";
+
+		# add the given server to dht, key=hash(fullpath)
+		value := ref DhtValue.StyxServer(name, addr);
+		keydata := array [keyring->SHA1dlen] of byte;
+		hashdata := array of byte path;
+		keyring->sha1(hashdata, len hashdata, keydata, nil);
+		local.dhtstore(Key(keydata[:Bigkey->BB]), value.pack());
+		sys->fprint(stderr, "Added server by dht key: %s\n%s\n", path, value.text());
+		# and now for every path component
+		(nil, folders) := sys->tokenize(path, "/");
+		curpath := "/";
+		while (folders != nil)
+		{
+			folder := hd folders;
+			folders = tl folders;
+
+			value := ref DhtValue.Folder(folder);
+			hashdata = array of byte curpath;
+			keyring->sha1(hashdata, len hashdata, keydata, nil);
+			local.dhtstore(Key(keydata[:Bigkey->BB]), value.pack());
+			sys->fprint(stderr, "Added folder by dht key: %s\n%s\n", curpath, value.text());
+
+			curpath += folder + "/";
+		}
+	}
+	return "ok";
 }
 
 strapparse(s: string): array of ref Node
