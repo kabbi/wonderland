@@ -26,6 +26,8 @@ include "hashtable.m";
 include "dht.m";
 	dht: Dht;
 	Node, Local, StoreItem: import dht;
+include "sort.m";
+    sort: Sort;
 
 	nametree: Nametree;
 	Tree: import nametree;
@@ -33,6 +35,8 @@ include "dht.m";
 VStyxServer,
 VFolder,
 Vmax: con 100 + iota;
+
+MAX_ENTRIES: con 10000; # Some "reasonable" value
 
 # DhtValue adt and serialisation
 
@@ -79,6 +83,15 @@ garray(a: array of byte, o: int): (array of byte, int)
     if(e > len a || l < 0)
         raise "fail: garray: malformed packet";
     return (a[o:e], e);
+}
+
+# Comparator for Sys->Dir entries
+DirComp: adt {
+    gt: fn(nil: self ref DirComp, d1, d2: ref Sys->Dir): int;
+};
+DirComp.gt(dc: self ref DirComp, d1, d2: ref Sys->Dir): int
+{
+    return d1.name < d2.name;
 }
 
 Cheshire: module {
@@ -294,6 +307,9 @@ init(nil: ref Draw->Context, args: list of string)
     if (bigkey == nil)
         badmodule(Bigkey->PATH);
     bigkey->init();
+    sort = load Sort Sort->PATH;
+    if (sort == nil)
+        badmodule(Sort->PATH);
 
     localkey = Key.generate();
     localaddr = hd args;
@@ -304,9 +320,9 @@ init(nil: ref Draw->Context, args: list of string)
 
 	# creating navigators and servers
     sys->fprint(stderr, "Creating styxservers\n");
-	navop: chan of ref Styxservers->Navop;
-	(tree, navop) = nametree->start();
-	nav = Navigator.new(navop);
+	navops: chan of ref Styxservers->Navop;
+	(tree, navops) = nametree->start();
+	nav = Navigator.new(navops);
 	(tchan, srv) := Styxserver.new(sys->fildes(0), nav, Qroot);
 
 	# creating file tree
@@ -346,13 +362,13 @@ init(nil: ref Draw->Context, args: list of string)
 				local.destroy();
 			exit;
 		}
-		e := handlemsg(gm, srv, tree);
+		e := handlemsg(gm, srv, tree, nav);
 		if (e != nil)
 			srv.reply(ref Rmsg.Error(gm.tag, e));
 	}
 }
 
-handlemsg(gm: ref Styx->Tmsg, srv: ref Styxserver, nil: ref Tree): string
+handlemsg(gm: ref Styx->Tmsg, srv: ref Styxserver, tree: ref Tree, nav: ref Navigator): string
 {
 	pick m := gm {
 	# some processing will be here some day...
@@ -408,6 +424,36 @@ handlemsg(gm: ref Styx->Tmsg, srv: ref Styxserver, nil: ref Tree): string
 	Walk =>
 		#tree.create(Qroot, dir(, Sys->DMDIR | 8r555, Qlast));
 		#Qlast = Qlast + big 1;
+        # Update current directory
+		keydata := array [keyring->SHA1dlen] of byte;
+		hashdata := array of byte tree.getpath(srvpath);
+		keyring->sha1(hashdata, len hashdata, keydata, nil);
+        dirkey := Key(keydata[:Bigkey->BB]);
+
+        newitems := local.dhtfindvalue(dirkey);
+        newcontent := list [0] of Sys->Dir;
+        for (l := newitems; l != nil; l = tl l)
+        {
+            entry: Sys->Dir;
+            pick item := DhtValue.unpack(hd l) { # Fix tuple
+                StyxServer =>
+                     entry = dir(item.name, 8r555, Q); # QWhat?
+                     entry. # Store the address information somewhere
+                Folder =>
+                     entry = dir(item.name, Sys->DMDIR | 8r555, Q); # QWhat?
+                * => 
+                    raise "fail:unknown DhtValue type";
+            }
+            newcontent = newcontent :: entry;
+        }
+
+        cursrvpath := srv.getfid(m.fid).path;
+        curcontent := list nav.readdir(cursrvpath, 0, MAX_ENTRIES); 
+        # TODO: We can't sort lists, need to sort apriori to conversion
+        sort->sort(ref DirComp(id), curcontent);
+        sort->sort(ref DirComp(id), newcontent);
+        # sort both lists, process them iteratively
+
 		fid := srv.walk(m);
 		# check if we've walked into a dir
 		#if (fid != nil && (fid.qtype & Sys->QTDIR) > 0)
