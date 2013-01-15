@@ -38,6 +38,8 @@ Vmax: con 100 + iota;
 
 MAX_ENTRIES: con 10000; # Some "reasonable" value
 
+HASHSIZE : con 10000;
+
 # DhtValue adt and serialisation
 
 BIT32SZ: con 4;
@@ -200,15 +202,31 @@ user: string;
 localaddr: string;
 localkey: Key;
 
+mountpoints : ref Hashtable->HashTable[string];
+
 stderr: ref Sys->FD;
 dhtlogfd: ref Sys->FD;
 mainpid: int;
 
-Qroot, Qcheshire, Qwelcome, Qaddserver, Qbootstrap,
+Qdummy, Qroot, Qcheshire, Qwelcome, Qaddserver, Qbootstrap,
 Qdhtlog, Qlastpath: con big iota;
 Qlast: big;
+reservedqids := array [] of 
+  {Qroot, Qcheshire, Qwelcome, Qaddserver, Qbootstrap};
 
 local: ref Local;
+
+# helper functions
+
+contains(a: array of big, x: big): int
+{
+    if (a == nil)
+        return 0;
+    for (i := 0; i < len a; ++i)
+        if (a[i] == x)
+            return i;
+    return 0;
+}
 
 # some styx helpers
 
@@ -310,6 +328,9 @@ init(nil: ref Draw->Context, args: list of string)
     sort = load Sort Sort->PATH;
     if (sort == nil)
         badmodule(Sort->PATH);
+    hashtable = load Hashtable Hashtable->PATH;
+    if (hashtable == nil)
+        badmodule(Hashtable->PATH);
 
     localkey = Key.generate();
     localaddr = hd args;
@@ -351,6 +372,7 @@ init(nil: ref Draw->Context, args: list of string)
 	Qlast = Qlastpath;
 
     sys->fprint(stderr, "Cheshire is up and running!\n");
+    mountpoints = hashtable->new(HASHSIZE, "Dummy string value");
 
 	# starting message processing loop
 	for (;;) {
@@ -424,35 +446,92 @@ handlemsg(gm: ref Styx->Tmsg, srv: ref Styxserver, tree: ref Tree, nav: ref Navi
 	Walk =>
 		#tree.create(Qroot, dir(, Sys->DMDIR | 8r555, Qlast));
 		#Qlast = Qlast + big 1;
-        # Update current directory
+
+        # Get updated contents from DHT
+        cursrvpath := srv.getfid(m.fid).path;
+        cwd := tree.getpath(cursrvpath);
 		keydata := array [keyring->SHA1dlen] of byte;
-		hashdata := array of byte tree.getpath(srvpath);
+		hashdata := array of byte cwd;
 		keyring->sha1(hashdata, len hashdata, keydata, nil);
         dirkey := Key(keydata[:Bigkey->BB]);
 
         newitems := local.dhtfindvalue(dirkey);
-        newcontent := list [0] of Sys->Dir;
+        newcontent := array [len newitems] of ref Sys->Dir;
+        last := 0;
         for (l := newitems; l != nil; l = tl l)
         {
             entry: Sys->Dir;
-            pick item := DhtValue.unpack(hd l) { # Fix tuple
+            (nil, I) := DhtValue.unpack((hd l).data);
+            pick item := I 
+            {
                 StyxServer =>
-                     entry = dir(item.name, 8r555, Q); # QWhat?
-                     entry. # Store the address information somewhere
+                     entry = dir(item.name, 8r555, Qdummy); 
+                     mountpoints.insert(cwd + "/" + item.name, item.addr);
                 Folder =>
-                     entry = dir(item.name, Sys->DMDIR | 8r555, Q); # QWhat?
+                     entry = dir(item.name, Sys->DMDIR | 8r555, Qdummy); 
                 * => 
                     raise "fail:unknown DhtValue type";
             }
-            newcontent = newcontent :: entry;
+            newcontent[last++] = ref entry;
         }
 
-        cursrvpath := srv.getfid(m.fid).path;
-        curcontent := list nav.readdir(cursrvpath, 0, MAX_ENTRIES); 
-        # TODO: We can't sort lists, need to sort apriori to conversion
-        sort->sort(ref DirComp(id), curcontent);
-        sort->sort(ref DirComp(id), newcontent);
-        # sort both lists, process them iteratively
+        # Get current contents from navigator
+        curcontent := nav.readdir(cursrvpath, 0, MAX_ENTRIES); 
+        
+        # Update the nametree according to new content
+        sort->sort(ref DirComp(), curcontent);
+        sort->sort(ref DirComp(), newcontent);
+        (curptr, newptr) := (0, 0);
+        while (curptr < len curcontent && newptr < len newcontent)
+        {
+            while (curptr < len curcontent &&
+                   newptr < len newcontent &&
+                   newcontent[newptr].name < curcontent[curptr].name)
+            {
+                # Add, move newptr
+                newcontent[newptr].qid.path = ++Qlast;
+                tree.create(cursrvpath, *newcontent[newptr]);
+                ++newptr;
+            }
+            while (curptr < len curcontent &&
+                   newptr < len newcontent &&
+                   newcontent[newptr].name == curcontent[curptr].name)
+            {
+                # Skip, move both
+                ++newptr;
+                ++curptr;
+            }
+            while (curptr < len curcontent &&
+                   newptr < len newcontent &&
+                   newcontent[newptr].name > curcontent[curptr].name)
+            {
+                # Delete, move curptr
+                if (!contains(reservedqids, curcontent[curptr].qid.path))
+                    tree.remove(curcontent[curptr].qid.path);
+                ++curptr;
+            }
+        }
+        while (newptr < len newcontent)
+        {
+            # Add
+            newcontent[newptr].qid.path = ++Qlast;
+            tree.create(cursrvpath, *newcontent[newptr]);
+            ++newptr;
+        }
+        while (curptr < len curcontent)
+        {
+            # Delete
+            if (!contains(reservedqids, curcontent[curptr].qid.path))
+                tree.remove(curcontent[curptr].qid.path);
+            ++curptr;
+        }
+
+        # Mount in case we cd to styxserver
+        if (m.names != nil && mountpoints.find(cwd + "/" + m.names[0]) != nil)
+        {
+		    sys->fprint(stderr, "Trying to mount server with addr: %s\n", 
+                                 mountpoints.find(cwd + "/" + m.names[0]));
+        }
 
 		fid := srv.walk(m);
 		# check if we've walked into a dir
