@@ -37,6 +37,8 @@ VFolder,
 Vmax: con 100 + iota;
 
 MAX_ENTRIES: con 10000; # Some "reasonable" value
+MESSAGE_SIZE: con 1000;
+NOFID: con ~0;
 
 HASHSIZE : con 10000;
 
@@ -93,7 +95,7 @@ DirComp: adt {
 };
 DirComp.gt(dc: self ref DirComp, d1, d2: ref Sys->Dir): int
 {
-    return d1.name < d2.name;
+    return d1.name > d2.name;
 }
 
 Cheshire: module {
@@ -202,7 +204,15 @@ user: string;
 localaddr: string;
 localkey: Key;
 
-mountpoints : ref Hashtable->HashTable[string];
+MountPoint: adt
+{
+    addr: string;
+    cfd, dfd: ref Sys->FD;
+    rootfid: int;
+};
+
+fidmap: ref Hashtable->HashTable[ref MountPoint];
+mountpoints: ref Hashtable->HashTable[string];
 
 stderr: ref Sys->FD;
 dhtlogfd: ref Sys->FD;
@@ -345,6 +355,7 @@ init(nil: ref Draw->Context, args: list of string)
 	(tree, navops) = nametree->start();
 	nav = Navigator.new(navops);
 	(tchan, srv) := Styxserver.new(sys->fildes(0), nav, Qroot);
+    mountpoints = hashtable->new(HASHSIZE, "Dummy string value");
 
 	# creating file tree
 	# TODO: fix permissions
@@ -398,6 +409,11 @@ handlemsg(gm: ref Styx->Tmsg, srv: ref Styxserver, tree: ref Tree, nav: ref Navi
 	Readerror =>
 		sys->fprint(stderr, "Some read error: %s\n", m.error);
 	Read =>
+        if ((mnt := fidmap.find(string m.fid)) != nil)
+        {
+            srv.reply(transmitTmsg(mnt.cfd, mnt.dfd, gm)); # Pass clunk message
+            break;
+        }
 		(c, err) := srv.canread(m);
 		if(c == nil)
 			return err;
@@ -419,6 +435,11 @@ handlemsg(gm: ref Styx->Tmsg, srv: ref Styxserver, tree: ref Tree, nav: ref Navi
 		else
 			srv.read(m);
 	Write =>
+        if ((mnt := fidmap.find(string m.fid)) != nil)
+        {
+            srv.reply(transmitTmsg(mnt.cfd, mnt.dfd, gm)); # Pass clunk message
+            break;
+        }
 		(c, err) := srv.canwrite(m);
 		if(c == nil)
 			return err;
@@ -444,8 +465,18 @@ handlemsg(gm: ref Styx->Tmsg, srv: ref Styxserver, tree: ref Tree, nav: ref Navi
 			srv.reply(answer);
 		}
 	Walk =>
-		#tree.create(Qroot, dir(, Sys->DMDIR | 8r555, Qlast));
-		#Qlast = Qlast + big 1;
+        if ((mnt := fidmap.find(string m.fid)) != nil)
+        # Not our domain - passing
+        {
+            if (m.fid == mnt.rootfid && m.names != nil && m.names[0] == "..")
+                ; # TODO: Do something? Clunk?
+            else
+            {
+                fidmap.insert(string m.newfid, mnt);
+                transmitTmsg(mnt.cfd, mnt.dfd, gm); # Pass message
+            }
+            break;
+        }
 
         # Get updated contents from DHT
         cursrvpath := srv.getfid(m.fid).path;
@@ -473,7 +504,7 @@ handlemsg(gm: ref Styx->Tmsg, srv: ref Styxserver, tree: ref Tree, nav: ref Navi
                      mountpoints.insert(cwd + "/" + item.name, item.addr);
                 Folder =>
                      entry = dir(item.name, Sys->DMDIR | 8r555, Qdummy); 
-                * => 
+                * =>
                     raise "fail:unknown DhtValue type";
             }
             newcontent[last++] = ref entry;
@@ -545,26 +576,73 @@ handlemsg(gm: ref Styx->Tmsg, srv: ref Styxserver, tree: ref Tree, nav: ref Navi
             sys->fprint(stderr, "  ./%s\n", upcontent[i].name);
 
         # Mount in case we cd to styxserver
-        if (m.names != nil && mountpoints.find(cwd + "/" + m.names[0]) != nil)
+        # Connect, Map, Attach.
+        if (m.names != nil && 
+           (addr := mountpoints.find(cwd + "/" + m.names[0])) != nil)
         {
-		    sys->fprint(stderr, "Trying to mount server with addr: %s\n", 
-                                 mountpoints.find(cwd + "/" + m.names[0]));
+            (err, conn) := sys->dial(addr, "");
+            if (err != 0)
+            {
+                sys->fprint(stderr, "Fail: can not connect to styxserver at %s.\n", 
+                                     addr);
+                break; # Will be cleared by dht, no need to interrupt
+            }
+            fidmap.insert(string m.newfid, ref MountPoint(addr, conn.cfd, 
+                                                          conn.dfd, m.newfid));
+            # Attach
+            transmitTmsg(mnt.cfd, mnt.dfd, ref Tmsg.Attach(0, m.newfid, NOFID, user, ""));
         }
-
-		fid := srv.walk(m);
-		# check if we've walked into a dir
-		#if (fid != nil && (fid.qtype & Sys->QTDIR) > 0)
-		#{
-		#	(dir, err) := nav.stat(fid.path);
-		#	if (dir != nil)
-		#		sys->fprint(stderr, "walked into: %s\n", tree.getpath(fid.path)); 
-		#	else
-		#		sys->fprint(stderr, "some walk error: %s\n", err);
-		#}
-	* =>
-		srv.default(gm);
+        else
+            fid := srv.walk(m);
+    Clunk =>
+        if ((mnt := fidmap.find(string m.fid)) != nil)
+        {
+            transmitTmsg(mnt.cfd, mnt.dfd, gm); # Pass clunk message
+            fidmap.delete(string m.fid);
+            srv.default(gm);
+        }
+        else
+            srv.default(gm);
+    Open =>
+        if ((mnt := fidmap.find(string m.fid)) != nil)
+            transmitTmsg(mnt.cfd, mnt.dfd, gm);
+        else
+            srv.default(gm);
+    Create =>
+        if ((mnt := fidmap.find(string m.fid)) != nil)
+            transmitTmsg(mnt.cfd, mnt.dfd, gm);
+        else
+            srv.default(gm);
+    Stat =>
+        if ((mnt := fidmap.find(string m.fid)) != nil)
+            transmitTmsg(mnt.cfd, mnt.dfd, gm);
+        else
+            srv.default(gm);
+    Remove =>
+        if ((mnt := fidmap.find(string m.fid)) != nil)
+            transmitTmsg(mnt.cfd, mnt.dfd, gm);
+        else
+            srv.default(gm);
+    Wstat =>
+        if ((mnt := fidmap.find(string m.fid)) != nil)
+            transmitTmsg(mnt.cfd, mnt.dfd, gm);
+        else
+            srv.default(gm);
+    * =>
+        srv.default(gm);
 	}
 	return nil;
+}
+
+transmitTmsg(cfd, dfd: ref Sys->FD, m: ref Styx->Tmsg): ref Styx->Rmsg
+{
+    if (sys->write(dfd, m.pack(), m.packedsize()) != m.packedsize())
+    {
+        sys->fprint(stderr, "Error writing to data FD.\n");
+        return nil;
+    }
+    reply := Rmsg.read(dfd, MESSAGE_SIZE);
+    return reply;
 }
 
 getcuruser(): string
