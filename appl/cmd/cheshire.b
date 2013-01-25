@@ -212,7 +212,7 @@ Qdummy, Qroot, Qcheshire, Qwelcome, Qaddserver, Qbootstrap,
 Qdhtlog, Qlastpath: con big iota;
 Qlast: big;
 reservedqids := array [] of 
-  {Qroot, Qcheshire, Qwelcome, Qaddserver, Qbootstrap};
+  {Qroot, Qcheshire, Qwelcome, Qaddserver, Qbootstrap, Qdhtlog};
 
 local: ref Local;
 
@@ -450,12 +450,16 @@ handlemsg(gm: ref Styx->Tmsg, srv: ref Styxserver, tree: ref Tree, nav: ref Navi
         # Get updated contents from DHT
         cursrvpath := srv.getfid(m.fid).path;
         cwd := tree.getpath(cursrvpath);
+        cwd = cwd + "/";
+        cwd = cwd[1:len cwd];
+        sys->fprint(stderr, "CWD: %s\n", cwd);
 		keydata := array [keyring->SHA1dlen] of byte;
 		hashdata := array of byte cwd;
 		keyring->sha1(hashdata, len hashdata, keydata, nil);
         dirkey := Key(keydata[:Bigkey->BB]);
 
         newitems := local.dhtfindvalue(dirkey);
+
         newcontent := array [len newitems] of ref Sys->Dir;
         last := 0;
         for (l := newitems; l != nil; l = tl l)
@@ -481,6 +485,13 @@ handlemsg(gm: ref Styx->Tmsg, srv: ref Styxserver, tree: ref Tree, nav: ref Navi
         # Update the nametree according to new content
         sort->sort(ref DirComp(), curcontent);
         sort->sort(ref DirComp(), newcontent);
+        # Debug
+        sys->fprint(stderr, "Current directory content:\n");
+        for (i := 0; i < len curcontent; ++i)
+            sys->fprint(stderr, "  ./%s\n", curcontent[i].name);
+        sys->fprint(stderr, "New directory content:\n");
+        for (i = 0; i < len newcontent; ++i)
+            sys->fprint(stderr, "  ./%s\n", newcontent[i].name);
         (curptr, newptr) := (0, 0);
         while (curptr < len curcontent && newptr < len newcontent)
         {
@@ -506,6 +517,7 @@ handlemsg(gm: ref Styx->Tmsg, srv: ref Styxserver, tree: ref Tree, nav: ref Navi
                    newcontent[newptr].name > curcontent[curptr].name)
             {
                 # Delete, move curptr
+                # TODO
                 if (!contains(reservedqids, curcontent[curptr].qid.path))
                     tree.remove(curcontent[curptr].qid.path);
                 ++curptr;
@@ -525,6 +537,12 @@ handlemsg(gm: ref Styx->Tmsg, srv: ref Styxserver, tree: ref Tree, nav: ref Navi
                 tree.remove(curcontent[curptr].qid.path);
             ++curptr;
         }
+
+        upcontent := nav.readdir(cursrvpath, 0, MAX_ENTRIES); 
+        sort->sort(ref DirComp(), upcontent);
+        sys->fprint(stderr, "Updated directory content:\n");
+        for (i = 0; i < len upcontent; ++i)
+            sys->fprint(stderr, "  ./%s\n", upcontent[i].name);
 
         # Mount in case we cd to styxserver
         if (m.names != nil && mountpoints.find(cwd + "/" + m.names[0]) != nil)
@@ -581,7 +599,8 @@ serverparse(s: string): string
 		hashdata := array of byte path;
 		keyring->sha1(hashdata, len hashdata, keydata, nil);
 		local.dhtstore(Key(keydata[:Bigkey->BB]), value.pack());
-		sys->fprint(stderr, "Added server by dht key: %s\n%s\n", path, value.text());
+		sys->fprint(stderr, "Added server by path: %s, dht key: %s\n%s\n", 
+                            path, Key(keydata[:Bigkey->BB]).text(), value.text());
 		# and now for every path component
 		(nil, folders) := sys->tokenize(path, "/");
 		curpath := "/";
@@ -590,11 +609,13 @@ serverparse(s: string): string
 			folder := hd folders;
 			folders = tl folders;
 
+            keydata := array [keyring->SHA1dlen] of byte;
 			value := ref DhtValue.Folder(folder);
 			hashdata = array of byte curpath;
 			keyring->sha1(hashdata, len hashdata, keydata, nil);
 			local.dhtstore(Key(keydata[:Bigkey->BB]), value.pack());
-			sys->fprint(stderr, "Added folder by dht key: %s\n%s\n", curpath, value.text());
+            sys->fprint(stderr, "Added folder by path: %s, dht key: %s\n%s\n",
+                                curpath, Key(keydata[:Bigkey->BB]).text(), value.text());
 
 			curpath += folder + "/";
 		}

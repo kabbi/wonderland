@@ -680,14 +680,6 @@ readbuf(fd: ref Sys->FD, msglim: int): array of byte
     return buf;
 }
 
-# What is that?
-istmsg(f: array of byte): int
-{
-    if(len f < H)
-        raise "fail: istmsg: buffer too small to be a message";
-    return (int f[BIT32SZ] & 1) == 0;
-}
-
 Node.text(n: self ref Node): string
 {
     if (n == nil)
