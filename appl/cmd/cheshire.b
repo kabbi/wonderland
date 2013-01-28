@@ -13,6 +13,7 @@ include "keyring.m";
     keyring: Keyring;
 include "security.m";
     random: Random;
+    auth: Auth;
 include "string.m";
     str: String;
 include "daytime.m";
@@ -203,6 +204,7 @@ nav: ref Navigator;
 user: string;
 localaddr: string;
 localkey: Key;
+authinfo: ref Keyring->Authinfo;
 
 MountPoint: adt
 {
@@ -318,6 +320,11 @@ init(nil: ref Draw->Context, args: list of string)
     random = load Random Random->PATH;
     if (random == nil)
         badmodule(Random->PATH);
+    auth = load Auth Auth->PATH;
+    if (auth == nil)
+        badmodule(Auth->PATH);
+    if ((err := auth->init()) != nil)
+        badmodule("auth init fail: " + err);
     keyring = load Keyring Keyring->PATH;
     if (keyring == nil)
         badmodule(Keyring->PATH);
@@ -345,6 +352,11 @@ init(nil: ref Draw->Context, args: list of string)
     user = getcuruser();
     stderr = sys->fildes(2);
     mainpid = sys->pctl(0, nil);
+
+    # setup authinfo for authorizing external servers
+    authinfo = keyring->readauthinfo("/usr/" + user + "/keyring/default");
+    if (authinfo == nil)
+        sys->fprint(stderr, "Reading default keyring failed, no server mounts will be performed\n");
 
     # creating navigators and servers
     sys->fprint(stderr, "Creating styxservers\n");
@@ -608,12 +620,22 @@ handlemsg(gm: ref Styx->Tmsg, srv: ref Styxserver, tree: ref Tree, nav: ref Navi
             (err, conn) := sys->dial(addr, "");
             if (err != 0)
             {
-                errmsg := sys->sprint("Fail: can not connect to styxserver at %s.\n", addr);
-                sys->fprint(stderr, "%s", errmsg);
+                errmsg := sys->sprint("Fail: can not connect to styxserver at %s", addr);
+                sys->fprint(stderr, "%s\n", errmsg);
                 srv.reply(ref Rmsg.Error(m.tag, errmsg));
                 break; # Will be cleared by dht, no need to interrupt
             }
             sys->fprint(stderr, "Ok!\n");
+            # Authorize
+            (fd, auerr) := auth->client("none", authinfo, conn.dfd);
+            if (fd == nil) # TODO: here  ^^^^ use some proper crypto algorithm selection
+            {
+                errmsg := sys->sprint("Fail: Unable to authorize the server: %s", auerr);
+                sys->fprint(stderr, "%s\n", errmsg);
+                srv.reply(ref Rmsg.Error(m.tag, errmsg));
+                break;
+            }
+            sys->fprint(stderr, "Authorize -- Ok!\n");
             # Attach
             transmitTmsg(conn.cfd, conn.dfd, ref Tmsg.Version(65535, MESSAGE_SIZE, "9P2000"));
             rootqid : ref Sys->Qid;
@@ -631,6 +653,7 @@ handlemsg(gm: ref Styx->Tmsg, srv: ref Styxserver, tree: ref Tree, nav: ref Navi
             sys->fprint(stderr, "Ok!\n");
             if (rootqid == nil)
             {
+                fidmap.delete(string m.newfid);
                 sys->fprint(stderr, "Fail: Unable to Attach to server at %s\n", addr);
                 srv.reply(ref Rmsg.Error(m.tag, "Fail: Unable to Attach to server"));
             }
