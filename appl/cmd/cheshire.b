@@ -208,8 +208,7 @@ MountPoint: adt
 {
     addr: string;
     cfd, dfd: ref Sys->FD;
-    rootfid: int;
-    parentfid: int;
+    parentqid: big;
 };
 
 fidmap: ref Hashtable->HashTable[ref MountPoint];
@@ -381,7 +380,7 @@ init(nil: ref Draw->Context, args: list of string)
 
     sys->fprint(stderr, "Cheshire is up and running!\n");
     mountpoints = hashtable->new(HASHSIZE, "Dummy string value");
-    fidmap = hashtable->new(HASHSIZE, ref MountPoint("", stderr, stderr, 0, 0));
+    fidmap = hashtable->new(HASHSIZE, ref MountPoint("", stderr, stderr, big 0));
 
     # starting message processing loop
     for (;;) {
@@ -467,10 +466,32 @@ handlemsg(gm: ref Styx->Tmsg, srv: ref Styxserver, tree: ref Tree, nav: ref Navi
         if ((mnt := fidmap.find(string m.fid)) != nil)
         # Not our domain - passing
         {
-            if (m.fid == mnt.rootfid && m.names != nil && m.names[0] == "..")
+            # Handle walking out of mounted server
+            curpath: string;
+            if (len m.names == 1 && m.names[0] == "..")
             {
-                pFid := srv.getfid(mnt.parentfid);
-                srv.reply(ref Rmsg.Walk(m.tag, array [] of {Sys->Qid(pFid.path, pFid.qtype, 0)})); # TODO: fix version
+                sys->fprint(stderr, "Trying to cd .. from server\n");
+                pick M := transmitTmsg(mnt.cfd, mnt.dfd, ref Tmsg.Stat(m.tag, m.fid))
+                {
+                    Stat =>
+                        curpath = M.stat.name;
+                    * =>
+                        srv.reply(ref Rmsg.Error(m.tag, "Fail: Server broke the connection"));
+                        return nil; # TODO: cd to the parent dir, also in all the other error cases
+                }
+            }
+
+            if (curpath == "/")
+            {
+                sys->fprint(stderr, "Successfully exited\n");
+                parentFid := srv.newfid(m.newfid);
+                if (parentFid == nil)
+                    sys->fprint(stderr, "really unexpected here...\n");
+                # TODO: use some template for that
+                parentFid.uname = user;
+                parentFid.path = mnt.parentqid;
+                parentFid.qtype = Sys->QTDIR;
+                srv.reply(ref Rmsg.Walk(m.tag, array [] of {Sys->Qid(mnt.parentqid, 0, Sys->QTDIR)})); # TODO: fix version
             }
             else
             {
@@ -587,14 +608,11 @@ handlemsg(gm: ref Styx->Tmsg, srv: ref Styxserver, tree: ref Tree, nav: ref Navi
             (err, conn) := sys->dial(addr, "");
             if (err != 0)
             {
-                sys->fprint(stderr, "Fail: can not connect to styxserver at %s.\n", 
-                                     addr);
+                errmsg := sys->sprint("Fail: can not connect to styxserver at %s.\n", addr);
+                sys->fprint(stderr, "%s", errmsg);
+                srv.reply(ref Rmsg.Error(m.tag, errmsg));
                 break; # Will be cleared by dht, no need to interrupt
             }
-            sys->fprint(stderr, "Ok!\n");
-            sys->fprint(stderr, "Inserting %s -> %s into fidmap -- ", string m.newfid, addr);
-            fidmap.insert(string m.newfid, ref MountPoint(addr, conn.cfd, 
-                                                          conn.dfd, m.newfid, m.fid));
             sys->fprint(stderr, "Ok!\n");
             # Attach
             transmitTmsg(conn.cfd, conn.dfd, ref Tmsg.Version(65535, MESSAGE_SIZE, "9P2000"));
@@ -606,6 +624,11 @@ handlemsg(gm: ref Styx->Tmsg, srv: ref Styxserver, tree: ref Tree, nav: ref Navi
                 * => 
                     rootqid = nil;
             }
+            sys->fprint(stderr, "Inserting %s -> %s into fidmap -- ", string m.newfid, addr);
+            parentFid := srv.getfid(m.fid);
+            fidmap.insert(string m.newfid, ref MountPoint(addr, conn.cfd, 
+                                                          conn.dfd, parentFid.path));
+            sys->fprint(stderr, "Ok!\n");
             if (rootqid == nil)
             {
                 sys->fprint(stderr, "Fail: Unable to Attach to server at %s\n", addr);
