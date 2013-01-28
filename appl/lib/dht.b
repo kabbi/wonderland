@@ -1484,7 +1484,7 @@ store(l: ref Local, where: ref Node, key: Key, value: ref StoreItem)
     l.callbacks.delete(msg.uid.text());
 }
 
-start(localaddr: string, bootstrap: array of ref Node, id: Key): ref Local
+start(localaddr: string, bootstrap: array of ref Node, id: Key, logfd: ref Sys->FD): ref Local
 {
     node := Node(id, localaddr, 0);
     contacts := ref Contacts(array [1] of ref Bucket, nil);
@@ -1504,7 +1504,7 @@ start(localaddr: string, bootstrap: array of ref Node, id: Key): ref Local
     store := hashtable->new(STORESIZE, storeitem);
     localstore := hashtable->new(STORESIZE, storeitem);
     server := ref Local(node, contacts, store, localstore,
-        hashtable->new(CALLBACKSIZE, ch), 0, 0, 0, nil, c, chan of int);
+        hashtable->new(CALLBACKSIZE, ch), 0, 0, 0, logfd, c, chan of int);
 
     server.contacts.local = server;
 

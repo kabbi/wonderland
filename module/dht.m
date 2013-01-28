@@ -192,6 +192,6 @@ Dht: module
 	};
 
 	init:	fn();
-	start:	fn(localaddr: string, bootstrap: array of ref Node, id: Key): ref Local;
+	start:	fn(localaddr: string, bootstrap: array of ref Node, id: Key, logfd: ref Sys->FD): ref Local;
 
 };

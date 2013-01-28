@@ -281,17 +281,14 @@ startdht()
 {
     dhtlogname := sys->sprint("/tmp/%ddhtlog.log", mainpid);
     dhtlogfd = sys->create(dhtlogname, Sys->ORDWR, 8r700);
-    local = dht->start(localaddr, straplist, localkey);
+    local = dht->start(localaddr, straplist, localkey, dhtlogfd);
     if (local == nil)
     {
         sys->fprint(stderr, "Very bad, dht init error: %r\n");
         raise sys->sprint("fail:dht:%r");
     }
     if (dhtlogfd != nil)
-    {
-        local.setlogfd(dhtlogfd);
         sys->fprint(stderr, "Dht logging started\n");
-    }
     sys->fprint(stderr, "Dht started\n");
 }
 

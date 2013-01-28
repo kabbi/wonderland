@@ -60,7 +60,7 @@ initlocal(addr: string, verbose: int): ref Local
     if (addr == "")
         addr = "udp!127.0.0.1!" + string port;
 
-    l := dht->start(addr, array [0] of ref Node, Key.generate());
+    l := dht->start(addr, array [0] of ref Node, Key.generate(), nil);
     if (l == nil)
     {
         sys->print("failed to start server!\n%r\n");
@@ -547,7 +547,7 @@ interactivetest(addr: string)
                     newservers[0] = servers[0];
                     bootstrap := array [] of {ref servers[0].node};
                     for (i := 1; i < count + 1; i++)
-                        newservers[i] = dht->start("udp!127.0.0.1!" + string (12100 + i - 1), bootstrap, Key.generate());
+                        newservers[i] = dht->start("udp!127.0.0.1!" + string (12100 + i - 1), bootstrap, Key.generate(), nil);
                     servers = newservers;
                 "printservers" =>
                     sys->print("Server count: %d\n", len servers);
