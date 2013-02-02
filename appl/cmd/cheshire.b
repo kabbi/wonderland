@@ -208,6 +208,8 @@ synthdirmap: ref Hashtable->HashTable[list of big];
 synthfilemap: ref Hashtable->HashTable[ref Sys->Dir];
 synthupmap: ref Hashtable->HashTable[string];
 
+mountpoints: ref Hashtable->HashTable[string];
+
 stderr: ref Sys->FD;
 dhtlogfd: ref Sys->FD;
 mainpid: int;
@@ -357,12 +359,6 @@ init(nil: ref Draw->Context, args: list of string)
 
     # creating file tree
     # TODO: fix permissions
-    #sys->fprint(stderr, "Setting up nametree\n");
-    #tree.create(Qroot, dir(".", Sys->DMDIR | 8r555, Qroot));
-    #tree.create(Qroot, dir("cheshire", Sys->DMDIR | 8r555, Qcheshire));
-    #tree.create(Qcheshire, dir("welcome", 8r555, Qwelcome));
-    #tree.create(Qcheshire, dir("addserver", 8r777, Qaddserver));
-    #tree.create(Qcheshire, dir("dhtlog", 8r555, Qdhtlog));
     synthdirmap = hashtable->new(HASHSIZE, big 0 :: nil);
     synthdirmap.insert(string Qroot, Qcheshire :: nil);
     synthdirmap.insert(string Qcheshire, Qwelcome :: Qaddserver :: Qdhtlog :: nil);
@@ -401,6 +397,8 @@ init(nil: ref Draw->Context, args: list of string)
     pathtoqid = hashtable->new(HASHSIZE, "");
     qidtopath.insert(string Qroot, "/");
     pathtoqid.insert("/", string Qroot);
+
+    mountpoints = hashtable->new(HASHSIZE, "");
 
     # starting message processing loop
     for (;;) {
@@ -499,14 +497,24 @@ navigator(navops: chan of ref styxservers->Navop)
         Walk =>
             found := 0;
             cwd := qidtopath.find(string n.path);
-            if (cwd == "/")
-                cwd = "";
-            destqid := pathtoqid.find(cwd + "/" + n.name);
+            # try to go up
+            if (n.name == ".." && n.path != Qroot)
+            {
+                # strip last /
+                curdir := cwd[:len cwd - 1];
+                # split the path in two parts
+                (uppath, upname) := str->splitr(curdir, "/");
+                n.reply <-= (ref dir(upname, Sys->DMDIR | 8r555, big pathtoqid.find(uppath)), nil);
+                break;
+            }
+
+            destpath := cwd + n.name + "/";
+            destqid := pathtoqid.find(destpath);
             if (destqid == nil)
             {
                 destqid = string ++Qlast;
-                pathtoqid.insert(cwd + "/" + n.name, destqid);
-                qidtopath.insert(destqid, cwd + "/" + n.name);
+                pathtoqid.insert(destpath, destqid);
+                qidtopath.insert(destqid, destpath);
             }
 
             keydata := array [keyring->SHA1dlen] of byte;
@@ -522,13 +530,15 @@ navigator(navops: chan of ref styxservers->Navop)
                     pick entry := I
                     {
                         StyxServer =>
-                            err := mountserver(entry, mountedon + "/" + cwd + "/" + n.name);
-                            if (err != nil)
-                                n.reply <-= (nil, err);
+                            if (mountpoints.find(destpath) == nil)
+                            {
+                                mountpoints.insert(destpath, entry.addr);
+                                spawn mountserver(entry, mountedon + destpath);
+                            }
                             n.reply <-= (ref dir(n.name, Sys->DMDIR | 8r555, big destqid), nil);
                         Folder =>
-                            qidtopath.insert(destqid, cwd + "/" + n.name);
-                            pathtoqid.insert(cwd + "/" + n.name, destqid);
+                            qidtopath.insert(destqid, destpath);
+                            pathtoqid.insert(destpath, destqid);
                             n.reply <-= (ref dir(n.name, Sys->DMDIR | 8r555, big destqid), nil);
                     }
                 }
@@ -537,11 +547,8 @@ navigator(navops: chan of ref styxservers->Navop)
                 n.reply <-= (nil, "fail: path not found");
         Readdir =>
             cwd := qidtopath.find(string n.path);
-            sys->fprint(stderr, "Readdir: checking path: %s\n", cwd);
             keydata := array [keyring->SHA1dlen] of byte;
             hashdata := array of byte cwd;
-            if (cwd == "/")
-                cwd = "";
             keyring->sha1(hashdata, len hashdata, keydata, nil);
             content := local.dhtfindvalue(Key(keydata[:Bigkey->BB]));
             for (l := content; l != nil; l = tl l)
@@ -551,12 +558,12 @@ navigator(navops: chan of ref styxservers->Navop)
                     continue;
 
                 (nil, I) := DhtValue.unpack((hd l).data);
-                entryqid := pathtoqid.find(cwd + "/" + I.name);
+                entryqid := pathtoqid.find(cwd + I.name + "/");
                 if (entryqid == nil)
                 {
                     entryqid = string ++Qlast;
-                    pathtoqid.insert(cwd + "/" + I.name, entryqid);
-                    qidtopath.insert(entryqid, cwd + "/" + I.name);
+                    pathtoqid.insert(cwd + I.name + "/", entryqid);
+                    qidtopath.insert(entryqid, cwd + I.name + "/");
                 }
                 entry := dir(I.name, 8r555 | Sys->DMDIR, big entryqid); 
                 n.reply <-= (ref entry, nil);
@@ -618,23 +625,25 @@ synthnavigator(op: ref styxservers->Navop): int
     return 0;
 }
 
-mountserver(server: ref DhtValue.StyxServer, path: string): string
+mountserver(server: ref DhtValue.StyxServer, path: string)
 {
+    # TODO: error handling
     # Connect
     sys->fprint(stderr, "Dialing to %s -- ", server.addr);
     (err, conn) := sys->dial(server.addr, "");
     if (err != 0)
-        return sys->sprint("Fail: can not connect to styxserver at %s", server.addr);
+    return;#    return sys->sprint("Fail: can not connect to styxserver at %s", server.addr);
     sys->fprint(stderr, "Ok!\n");
     # Authorize
     (fd, auerr) := auth->client("none", authinfo, conn.dfd);
     if (fd == nil) # TODO: here  ^^^^ use some proper crypto algorithm selection
-        return sys->sprint("Fail: Unable to authorize the server: %s", auerr);
+    return;#    return sys->sprint("Fail: Unable to authorize the server: %s", auerr);
     sys->fprint(stderr, "Authorize -- Ok!\n");
     # Mount
     if (sys->mount(fd, nil, path, Sys->MREPL, nil) < 0)
-        return "fail: unable to mount";
-    return nil;
+    ;#    return "fail: unable to mount";
+    sys->fprint(stderr, "Mount -- Ok!\n");
+    #return nil;
 }
 
 getcuruser(): string
