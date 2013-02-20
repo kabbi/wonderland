@@ -533,7 +533,7 @@ navigator(navops: chan of ref styxservers->Navop)
                             if (mountpoints.find(destpath) == nil)
                             {
                                 mountpoints.insert(destpath, entry.addr);
-                                spawn mountserver(entry, mountedon + destpath);
+                                spawn mountserver(entry.addr, mountedon + destpath);
                             }
                             n.reply <-= (ref dir(n.name, Sys->DMDIR | 8r555, big destqid), nil);
                         Folder =>
@@ -625,14 +625,14 @@ synthnavigator(op: ref styxservers->Navop): int
     return 0;
 }
 
-mountserver(server: ref DhtValue.StyxServer, path: string)
+mountserver(addr: string, path: string)
 {
     # TODO: error handling
     # Connect
-    sys->fprint(stderr, "Dialing to %s -- ", server.addr);
-    (err, conn) := sys->dial(server.addr, "");
+    sys->fprint(stderr, "Dialing to %s -- ", addr);
+    (err, conn) := sys->dial(addr, "");
     if (err != 0)
-    return;#    return sys->sprint("Fail: can not connect to styxserver at %s", server.addr);
+    return;#    return sys->sprint("Fail: can not connect to styxserver at %s", addr);
     sys->fprint(stderr, "Ok!\n");
     # Authorize
     (fd, auerr) := auth->client("none", authinfo, conn.dfd);
