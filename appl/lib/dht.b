@@ -748,7 +748,6 @@ Contacts.addcontact(c: self ref Contacts, n: ref Node)
 
     c.local.logevent("addcontact", "Adding contact " + n.text());
 
-    <-c.local.sync;
     bucketInd := c.findbucket(n.id);
     #TODO: Update lastaccess time?
     case c.buckets[bucketInd].addnode(n)
@@ -756,14 +755,12 @@ Contacts.addcontact(c: self ref Contacts, n: ref Node)
         * =>
             #Success, nothing to do here.
             c.local.logevent("addcontact", "Added successfully");
-            c.local.sync <-= 1;
         EBucketFull => 
             c.local.logevent("addcontact", "Bucket full, trying to split");
             #TODO: Substitute to section 2.2 (see l.152 of p2plib)
             if (c.buckets[bucketInd].isinrange(c.local.node.id))
             {
                 c.split(bucketInd);
-                c.local.sync <-= 1;
                 c.addcontact(n);
             }
             else
@@ -774,11 +771,9 @@ Contacts.addcontact(c: self ref Contacts, n: ref Node)
                 ch := c.local.sendtmsg(node, msg);
                 if (ch != nil)
                     spawn replacefirstnode(c, *n, *node, ch, msg.uid);
-                c.local.sync <-= 1;
             }
         EAlreadyPresent =>
             c.local.logevent("addcontact", "Already present, moving to top");
-            c.local.sync <-= 1;
             c.removecontact(n.id);
             c.addcontact(n);
     }
@@ -810,7 +805,6 @@ Contacts.split(c: self ref Contacts, idx: int)
 Contacts.removecontact(c: self ref Contacts, id: Key)
 {
     c.local.logevent("removecontact", "Removing contact " + id.text());
-    <-c.local.sync;
     trgbucket := c.buckets[c.findbucket(id)];
     idx := trgbucket.findnode(id);
     if (idx == -1)
@@ -820,7 +814,6 @@ Contacts.removecontact(c: self ref Contacts, id: Key)
     nodes[idx:] = trgbucket.nodes[idx+1:];
     trgbucket.nodes = nodes;
     c.buckets[c.findbucket(id)] = trgbucket;
-    c.local.sync <-= 1;
 }
 Contacts.findbucket(c: self ref Contacts, id: Key): int
 {
@@ -954,34 +947,13 @@ Local.processtmsg(l: self ref Local, buf: array of byte)
                 answer := ref Rmsg.Ping(m.uid, l.node.addr, l.node.id, m.senderID);
                 l.sendrmsg(sender, answer);
             Store =>
-                keytext := m.key.text();
                 result := SFail;
+                # insert or update in our node's storage
                 if (len m.value.data != 0)
                 {
-                    items := l.store.find(keytext);
-                    if (items != nil)
-                    {
-                        localvalue := lists->find(m.value, items);
-                        if (localvalue != nil)
-                        {
-                            (hd localvalue).lastupdate = daytime->now();
-                            if ((hd localvalue).publishtime < m.value.publishtime)
-                                (hd localvalue).publishtime = m.value.publishtime;
-                            result = SSuccess;
-                        }
-                        else
-                        {
-                            items = m.value :: items;
-                            l.store.delete(keytext);
-                            l.store.insert(keytext, items);
-                            result = SSuccess;
-                        }
-                    }
-                    else
-                    {
-                        l.store.insert(keytext, list of {m.value});
-                        result = SSuccess;
-                    }
+                    replacement := ref StoreItem(m.value.data, m.value.lastupdate, m.value.publishtime);
+                    l.storech <-= (m.key.text(), m.value, replacement, l.store);
+                    result := SSuccess;
                 }
                 answer := ref Rmsg.Store(m.uid, l.node.addr, l.node.id, m.senderID, result);
                 l.sendrmsg(sender, answer);
@@ -1002,7 +974,7 @@ Local.processtmsg(l: self ref Local, buf: array of byte)
         }
 
         # add every incoming node
-        l.contacts.addcontact(sender);
+        l.contactsch <-= (QAddContact, sender);
     }
 #    exception e
 #    {
@@ -1072,12 +1044,7 @@ Local.timer(l: self ref Local)
                 }
                 # expire stage
                 if (curtime - item.publishtime > EXPIRE_TIME)
-                {
-                    newitemlist := lists->delete(item, itemlist);
-                    l.store.delete((hd rest).key);
-                    if (len newitemlist > 0)
-                        l.store.insert((hd rest).key, newitemlist);
-                }
+                    l.storech <-= ((hd rest).key, item, nil, l.store);
             }
         }
 
@@ -1100,14 +1067,67 @@ Local.timer(l: self ref Local)
         }
     }
 }
-Local.syncthread(l: self ref Local)
+# Thread-safeness functions
+Local.callbacksproc(l: self ref Local)
 {
-    l.syncpid = sys->pctl(0, nil);
+    l.callbacksprocpid = sys->pctl(0, nil);
 
     while (1)
     {
-        l.sync <-= 1;
-        <-l.sync;
+        (action, key, channel) := <-l.callbacksch;
+        case (action) {
+            QAddCallback =>
+                l.callbacks.insert(key, channel);
+            QRemoveCallback =>
+                l.callbacks.delete(key);
+        }
+    }
+}
+Local.contactsproc(l: self ref Local)
+{
+    l.contactsprocpid = sys->pctl(0, nil);
+
+    while (1)
+    {
+        (action, node) := <-l.contactsch;
+        case (action) {
+            QAddContact =>
+                l.contacts.addcontact(node);
+            QRemoveContact =>
+                l.contacts.removecontact(node.id);
+        }
+    }
+}
+Local.storeproc(l: self ref Local)
+{
+    l.storeprocpid = sys->pctl(0, nil);
+
+    while (1)
+    {
+        (key, item, replacement, table) := <-l.storech;
+        if (replacement == nil) # then delete it!
+        {
+            items := table.find(key);
+            if (items == nil || lists->find(replacement, items) == nil)
+                continue;
+            newitemlist := lists->delete(item, items);
+            table.delete(key);
+            if (len newitemlist > 0)
+                table.insert(key, newitemlist);
+        }
+        else # add or update it!
+        {
+            items := table.find(key);
+            if (items == nil)
+            {
+                items = item :: nil;
+                table.insert(key, items);
+                continue;
+            }
+            newitemlist := lists->delete(item, items);
+            table.delete(key);
+            table.insert(key, replacement :: newitemlist);
+        }
     }
 }
 Local.sendtmsg(l: self ref Local, n: ref Node, msg: ref Tmsg): chan of ref Rmsg
@@ -1123,7 +1143,7 @@ Local.sendtmsg(l: self ref Local, n: ref Node, msg: ref Tmsg): chan of ref Rmsg
         l.logevent("sendtmsg", sys->sprint("Send error: %r"));
         #raise sys->sprint("fail:sendtmsg:send error:%r");
 
-    l.callbacks.insert(msg.uid.text(), ch);
+    l.callbacksch <-= (QAddCallback, msg.uid.text(), ch);
     sys->write(c.dfd, buf, len buf);
     return ch;
 }
@@ -1145,7 +1165,9 @@ Local.destroy(l: self ref Local)
     l.logevent("destroy", "Quitting...");
     killpid(l.processpid);
     killpid(l.timerpid);
-    killpid(l.syncpid);
+    killpid(l.callbacksprocpid);
+    killpid(l.contactsprocpid);
+    killpid(l.storeprocpid);
 }
 
 Local.setlogfd(l: self ref Local, fd: ref Sys->FD)
@@ -1196,31 +1218,12 @@ Local.dhtfindvalue(l: self ref Local, id: Key): list of ref StoreItem
 }
 Local.dhtstore(l: self ref Local, key: Key, data: array of byte)
 {
-    item := ref StoreItem(data, daytime->now(), daytime->now());
+    now := daytime->now();
+    item := ref StoreItem(data, now, now);
     keytext := key.text();
+    # insert or update (with the new timestamps) in our storage
     if (len data != 0)
-    {
-        items := l.ourstore.find(keytext);
-        if (items != nil)
-        {
-            localvalue := lists->find(item, items);
-            if (localvalue != nil)
-            {
-                (hd localvalue).lastupdate = daytime->now();
-                (hd localvalue).publishtime = daytime->now();
-            }
-            else
-            {
-                items = item :: items;
-                l.ourstore.delete(keytext);
-                l.ourstore.insert(keytext, items);
-            }
-        }
-        else
-        {
-            l.ourstore.insert(keytext, list of {item});
-        }
-    }
+        l.storech <-= (keytext, item, item, l.ourstore);
     storehelper(l, key, item);
 }
 storehelper(l: ref Local, key: Key, value: ref StoreItem)
@@ -1359,7 +1362,7 @@ Local.dhtping(l: self ref Local, id: Key): int
         <-killerch =>
             l.logevent("dhtping", "Waiting timeout");
     }
-    l.callbacks.delete(msg.uid.text());
+    l.callbacksch <-= (QRemoveCallback, msg.uid.text(), nil);
     return result;
 }
 
@@ -1384,18 +1387,18 @@ replacefirstnode(c: ref Contacts, toadd: Node, pingnode: Node, ch: chan of ref R
                         c.local.logevent("replacefirstnode", "Received answer from unexpected node");
                         break;
                     }
-                    c.removecontact(pingnode.id);
-                    c.addcontact(ref pingnode);
+                    c.local.contactsch <-= (QRemoveContact, ref Node(pingnode.id, "", 0));
+                    c.local.contactsch <-= (QAddContact, ref pingnode);
                 * =>
                     spawn timerreaper(killerch);
                     c.local.logevent("replacefirstnode", "Received answer, but not the desired message format");
             }
         <-killerch =>
             c.local.logevent("replacefirstnode", "Answer not received, killing node");
-            c.removecontact(pingnode.id);
-            c.addcontact(ref toadd);
+            c.local.contactsch <-= (QRemoveContact, ref Node(pingnode.id, "", 0));
+            c.local.contactsch <-= (QAddContact, ref toadd);
     }
-    c.local.callbacks.delete(uid.text());
+    c.local.callbacksch <-= (QRemoveCallback, uid.text(), nil);
 }
 findnode(l: ref Local, targetnode: ref Node, uid: Key, rch: chan of ref Rmsg, retrievevalue: int)
 {
@@ -1445,7 +1448,7 @@ findnode(l: ref Local, targetnode: ref Node, uid: Key, rch: chan of ref Rmsg, re
             l.logevent("findnode", "Message wait timeout");
             rch <-= nil;
     }
-    l.callbacks.delete(msg.uid.text());
+    l.callbacksch <-= (QRemoveCallback, msg.uid.text(), nil);
 }
 store(l: ref Local, where: ref Node, key: Key, value: ref StoreItem)
 {
@@ -1481,7 +1484,7 @@ store(l: ref Local, where: ref Node, key: Key, value: ref StoreItem)
         <-killerch =>
             l.logevent("store", "Message wait timeout");
     }
-    l.callbacks.delete(msg.uid.text());
+    l.callbacksch <-= (QRemoveCallback, msg.uid.text(), nil);
 }
 
 start(localaddr: string, bootstrap: array of ref Node, id: Key, logfd: ref Sys->FD): ref Local
@@ -1503,14 +1506,19 @@ start(localaddr: string, bootstrap: array of ref Node, id: Key, logfd: ref Sys->
     storeitem := list of {ref StoreItem(array [0] of byte, 0, 0)};
     store := hashtable->new(STORESIZE, storeitem);
     localstore := hashtable->new(STORESIZE, storeitem);
-    server := ref Local(node, contacts, store, localstore,
-        hashtable->new(CALLBACKSIZE, ch), 0, 0, 0, logfd, c, chan of int);
+    callbacksch := chan of (int, string, chan of ref Rmsg);
+    contactsch := chan of (int, ref Node);
+    storech := chan of (string, ref StoreItem, ref StoreItem, ref HashTable[list of ref StoreItem]);
+    server := ref Local(node, contacts, store, localstore, callbacksch,
+        hashtable->new(CALLBACKSIZE, ch), storech, contactsch, 0, 0, 0, 0, 0, logfd, c);
 
     server.contacts.local = server;
 
     spawn server.process();
     spawn server.timer();
-    spawn server.syncthread();
+    spawn server.callbacksproc();
+    spawn server.contactsproc();
+    spawn server.storeproc();
 
     server.dhtfindnode(id, bootstrap);
 

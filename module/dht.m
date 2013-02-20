@@ -51,6 +51,17 @@ Dht: module
 	SSuccess,
 	SFail: con iota;
 
+	# Callbacks channel actions
+	QAddCallback,
+	QRemoveCallback,
+	# Store channel actions (maybe are not used)
+	QAddItem,
+	QRemoveItem,
+	QUpdateItem,
+	# Contacts channel actions
+	QAddContact,
+	QRemoveContact: con iota;
+
 	Node: adt {
 		id: Key;
 		addr: string;
@@ -164,11 +175,15 @@ Dht: module
 		setlogfd: fn(nil: self ref Local, fd: ref Sys->FD);
 
 		# private data and methods
+		callbacksch: chan of (int, string, chan of ref Rmsg);
 		callbacks: ref HashTable[chan of ref Rmsg];
-		timerpid, processpid, syncpid: int;
+		storech: chan of (string, ref StoreItem, ref StoreItem,
+			ref HashTable[list of ref StoreItem]);
+		contactsch: chan of (int, ref Node);
+		timerpid, processpid, callbacksprocpid,
+			contactsprocpid, storeprocpid: int;
 		logfd: ref Sys->FD;
 		conn: Sys->Connection;
-		sync: chan of int;
 
 		# do some periodic processing
 		process: fn(nil: self ref Local);
@@ -185,8 +200,10 @@ Dht: module
 		logevent: fn(nil: self ref Local, source: string, msg: string);
 		# fire the event with some interval
 		timer: fn (nil: self ref Local);
-		# the thing that would sync everything
-		syncthread: fn (nil: self ref Local);
+		# the things that would sync everything
+		callbacksproc: fn (nil: self ref Local);
+		contactsproc: fn (nil: self ref Local);
+		storeproc: fn (nil: self ref Local);
 		# finish all internal threads and close the server
 		destroy: fn(nil: self ref Local);
 	};
