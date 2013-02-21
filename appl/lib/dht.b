@@ -1108,7 +1108,7 @@ Local.storeproc(l: self ref Local)
         if (replacement == nil) # then delete it!
         {
             items := table.find(key);
-            if (items == nil || lists->find(replacement, items) == nil)
+            if (items == nil || lists->find(item, items) == nil)
                 continue;
             newitemlist := lists->delete(item, items);
             table.delete(key);
