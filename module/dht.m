@@ -19,7 +19,7 @@ Dht: module
 	ALPHA:	con 1;
 	B:		con 32;
 	BB:		con B/8; # B in bytes
-	K:		con 5;
+	K:		con 5; 
 	EXPIRE_TIME:	con 180;    # 86410
 	REFRESH_TIME:	con 60;		# 3600
 	REPLICATE_TIME:	con 3600;	# 3600
@@ -35,6 +35,10 @@ Dht: module
 	RFindValue,
 	TFindNode,		# 106
 	RFindNode,
+    TAskRandezvous, # 108
+    RAskRandezvous,
+    TInvitation,    # 110
+    RInvitation,
 	Tmax: con 100+iota;
 
 	# DHT functions error codes
@@ -51,6 +55,10 @@ Dht: module
 	SSuccess,
 	SFail: con iota;
 
+	# AskRandezvous result codes
+	RSuccess,
+	RFail: con iota;
+
 	# Callbacks channel actions
 	QAddCallback,
 	QRemoveCallback,
@@ -64,7 +72,9 @@ Dht: module
 
 	Node: adt {
 		id: Key;
-		addr: string;
+		privateaddr: string;
+        publicaddr: string;
+        serveraddr: string;
 		rtt: int;		# round-trip time
 
 		text: fn(nil: self ref Node): string;
@@ -94,6 +104,10 @@ Dht: module
 			key: Key;
 		FindValue =>
 			key: Key;
+        AskRandezvous =>
+            address: string;
+        Invitation =>
+            address: string;
 		}
 
 		read:	fn(fd: ref Sys->FD, msize: int): ref Tmsg;
@@ -119,6 +133,10 @@ Dht: module
 		FindValue =>
 			nodes: array of Node;
 			value: list of ref StoreItem;
+        AskRandezvous =>
+            result: int;
+        Invitation =>
+            result: int;
 		}
 
 		read:	fn(fd: ref Sys->FD, msize: int): ref Rmsg;
@@ -139,7 +157,7 @@ Dht: module
 		addnode: fn(nil: self ref Bucket, n: ref Node): int;
 		getnodes: fn(nil: self ref Bucket, size: int): array of Node;
 		findnode: fn(nil: self ref Bucket, id: Key): int;
-        print: fn(nil: self ref Bucket, tabs: int); 
+        text: fn(nil: self ref Bucket, tabs: int): string; 
 	};
 
 	Contacts: adt {
@@ -154,10 +172,11 @@ Dht: module
         findbucket: fn(nil: self ref Contacts, id: Key): int; 
         split: fn(nil: self ref Contacts, idx: int); 
         randomidinbucket: fn(nil: self ref Contacts, idx: int): Key; 
-        print: fn(nil: self ref Contacts, tabs: int);
+        text: fn(nil: self ref Contacts, tabs: int): string;
 	};
 
 	Local: adt {
+        #NOTE: For local node pubaddr always equals to prvaddr by now
 		node: Node;
 		contacts: cyclic ref Contacts;
 		# store consists of Key, data and last access time
