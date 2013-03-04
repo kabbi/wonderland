@@ -291,13 +291,13 @@ gnode(a: array of byte, o: int): (Node, int)
 {
     key: Key;
     (key, o) = gkey(a, o);
-    praddr, pubaddr, saddr: string;
-    (praddr, o) = gstring(a, o);
+    prvaddr, pubaddr, srvaddr: string;
+    (prvaddr, o) = gstring(a, o);
     (pubaddr, o) = gstring(a, o);
-    (saddr, o) = gstring(a, o);
+    (srvaddr, o) = gstring(a, o);
     rtt: int;
     (rtt, o) = g32(a, o);
-    return (Node(key, praddr, pubaddr, saddr, rtt), o);
+    return (Node(key, prvaddr, pubaddr, srvaddr, rtt), o);
 }
 
 gnodes(a: array of byte, o: int): (array of Node, int)
@@ -995,7 +995,7 @@ Local.processtmsg(l: self ref Local, buf: array of byte)
             return;
         }
 
-#TRAVERSE TODO: VIVISECTION
+#TRAVERSE TODO: Message vivisection
         sender := ref Node(msg.senderID, msg.remoteaddr, 0);
 
         pick m := msg {
@@ -1028,14 +1028,14 @@ Local.processtmsg(l: self ref Local, buf: array of byte)
                 answer := ref Rmsg.FindValue(m.uid, l.node.pubaddr, l.node.id, m.senderID, nodes, value);
                 l.sendrmsg(sender, answer);
 	    AskRandezvous =>
-#TRAVERSE TODO: Do we really need another pack of blocking stuff here or make it async?
+#TRAVERSE TODO: Making it async seems the best way.
 		spawn l.processrandezvousquery(m);
 	    Invitation => 
-    		#All in all, it'll be ignored in any case
-    		traverser := ref Rmsg.Ping(m.uid, l.node.pubaddr, l.node.id, m.senderID);
-	    	l.sendrmsg(m.address, traversr);
+		#All in all, it'll be ignored in any case
+		traverser := ref Rmsg.Ping(m.uid, l.node.pubaddr, l.node.id, m.senderID);
+		l.sendrmsg(m.address, traversr);
 		answer := ref Rmsg.Invitation(m.uid, l.node.pubaddr, l.node.id, m.senderID, RSuccess);
-    		l.sendrmsg(sender, answer);
+		l.sendrmsg(sender, answer);
         }
 
         # add every incoming node
@@ -1198,7 +1198,18 @@ Local.storeproc(l: self ref Local)
 }
 Local.sendtmsg(l: self ref Local, n: ref Node, msg: ref Tmsg): chan of ref Rmsg
 {
-#TRAVERSE TODO: Need-to-traverse check and traversing go here.
+    isdirect := 1;
+    if (n.pubaddr != n.prvaddr)
+    {
+	l.logevent("sendtmsg", sys->sprint("Trying to establish randezvous at: %s", n.srvaddr);
+        isdirect = l.askrandezvous(n.srvaddr, n.pubaddr);
+	if (!isdirect)
+	{
+	    l.logevent("sendtmsg", sys->sprint("Traverse error: unable to establish randezvous"));
+	    #raise sys->sprint("fail:sendtmsg:send error:%r");
+	    return nil;
+	}
+    }
     l.logevent("sendtmsg", "Sending message to " + n.text());
     l.logevent("sendtmsg", "Dump: " + msg.text());
     ch := chan of ref Rmsg;
@@ -1435,7 +1446,10 @@ Local.dhtping(l: self ref Local, id: Key): int
 #TRAVERSE TODO
 Local.processrandezvousquery(l: self ref Local, m: Tmsg.AskRandezvous)
 {
-    l.logevent("processrandezvous", "Randezvous for " + m.addr + " <-> " m.node.
+    l.logevent("processrandezvous", "Randezvous for " + m.addr + " <-> " + m.node + ".");
+}
+Local.askrandezvous(l: self ref Local, srvaddr, nodeaddr: string): int
+{
 }
 # Callbacks
 timer(ch: chan of int, timeout: int)
