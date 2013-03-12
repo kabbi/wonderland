@@ -40,27 +40,28 @@ VALUE: con LEN+BIT32SZ+BIT32SZ;
 STORESIZE: con 13;
 CALLBACKSIZE: con 13;
 HASHSIZE: con 13;
-H: con BIT32SZ+BIT8SZ+KEY+LEN+KEY+KEY;  # minimum header length: size[4] type uid[20] remoteaddr[4+] sender[20] target[20]
+H: con BIT32SZ+BIT8SZ+KEY+KEY+KEY;  # minimum header length: size[4] type uid[20] sender[20] target[20]
+TH: con LEN+LEN+LEN+KEY; # Tmsg added header size: senderpubaddr senderprvadd sendersrvaddr sendersrvid
 
 # minimum packet sizes
 hdrlen := array[Tmax] of
 {
-TPing =>	     H,			  # no data
+TPing =>	     H+TH,		  # no data
 RPing =>	     H,			  # no data
 
-TStore =>            H+KEY+VALUE,         # key[20] value[12+]
+TStore =>            H+KEY+VALUE+TH,      # key[20] value[12+]
 RStore =>	     H+BIT32SZ,           # result[4]
 
-TFindNode =>         H+KEY,               # no data
+TFindNode =>         H+KEY+TH,            # no data
 RFindNode =>         H+LEN,		  # nodes[4+]
 
-TFindValue =>        H+KEY,               # no data
+TFindValue =>        H+KEY+TH,            # no data
 RFindValue =>        H+LEN+LEN,           # nodes[4+] value[4+]
 
-TAskRandezvous =>    H+LEN,		  # address
-RAskRandezvous =>    H+BIT32SZ,           # result
+TAskRandezvous =>    H+LEN+KEY+TH,        # address + key
+RAskRandezvous =>    H+BIT32SZ+TH,        # result
 
-TInvitation =>       H+LEN,               # address
+TInvitation =>       H+LEN+LEN+KEY+TH,    # {pub, prv}address[4+] + key[20]
 RInvitation =>       H+BIT32SZ,           # result
 };
 
@@ -176,10 +177,10 @@ pnodes(a: array of byte, o: int, na: array of Node): int
 pnode(a: array of byte, o: int, n: Node): int
 {
     o = pkey(a, o, n.id);
-    o = pstring(a, o, n.addr);
-    o = pstring(a, o, n.addr);
-    o = pstring(a, o, n.addr);
-    o = p32(a, o, n.rtt);
+    o = pstring(a, o, n.prvaddr);
+    o = pstring(a, o, n.pubaddr);
+    o = pstring(a, o, n.srvaddr);
+    o = pkey(a, o, n.srvid);
     return o;
 }
 
@@ -289,15 +290,14 @@ gkey(a: array of byte, o: int): (Key, int)
 
 gnode(a: array of byte, o: int): (Node, int)
 {
-    key: Key;
+    key, srvid: Key;
     (key, o) = gkey(a, o);
     prvaddr, pubaddr, srvaddr: string;
     (prvaddr, o) = gstring(a, o);
     (pubaddr, o) = gstring(a, o);
     (srvaddr, o) = gstring(a, o);
-    rtt: int;
-    (rtt, o) = g32(a, o);
-    return (Node(key, prvaddr, pubaddr, srvaddr, rtt), o);
+    (srvid, o) = gkey(a, o);
+    return (Node(key, prvaddr, pubaddr, srvaddr, srvid), o);
 }
 
 gnodes(a: array of byte, o: int): (array of Node, int)
@@ -365,7 +365,9 @@ Tmsg.packedsize(t: self ref Tmsg): int
     if(mtype <= 0)
         return 0;
     ml := hdrlen[mtype];
-    ml += len array of byte t.remoteaddr;
+    ml += len array of byte t.sender.prvaddr;
+    ml += len array of byte t.sender.pubaddr;
+    ml += len array of byte t.sender.srvaddr;
     pick m := t {
     Ping =>
         # no dynamic data
@@ -373,8 +375,10 @@ Tmsg.packedsize(t: self ref Tmsg): int
         ml += len m.value.data;
     FindNode or FindValue =>
         # no dynamic data
-    AskRandezvous or Invitation =>
+    AskRandezvous =>
 	ml += len m.addr;
+    Invitation =>
+	ml += len m.oppprvaddr + len m.opppubaddr;
     }
     return ml;
 }
@@ -389,9 +393,8 @@ Tmsg.pack(t: self ref Tmsg): array of byte
     o = p32(d, o, ds);
     d[o++] = byte ttag2type[tagof t];
     o = pkey(d, o, t.uid);
-    o = pstring(d, o, t.remoteaddr);
-    o = pkey(d, o, t.senderID);
-    o = pkey(d, o, t.targetID);
+    o = pnode(d, 0, t.sender);
+    o = pkey(d, o, t.targetid);
 
     pick m := t {
     Ping =>
@@ -401,8 +404,13 @@ Tmsg.pack(t: self ref Tmsg): array of byte
         o = pstoreitem(d, o, m.value);
     FindNode or FindValue =>
         o = parray(d, o, m.key.data);
-    AskRandezvous or Invitation =>
-	o = pstring(d, o, m.address);
+    AskRandezvous =>
+	o = pkey(d, o, m.oppid);
+	o = pstring(d, o, m.addr);
+    Invitation =>
+	o = pstring(d, o, m.oppprvaddr);
+	o = pstring(d, o, m.opppubaddr);
+	o = pkey(d, o, m.oppid);
     * =>
         raise "fail: Tmsg.pack: bad message type";
     }
@@ -429,12 +437,11 @@ Tmsg.unpack(f: array of byte): (int, ref Tmsg)
         raise "fail: Tmsg.unpack: unknown packet type";
 
     o += 1; # for that mptype field
-    uid, senderID, targetID: Key;
-    remoteaddr: string;
+    uid, targetid: Key;
+    sender: Node;
     (uid, o) = gkey(f, o);
-    (remoteaddr, o) = gstring(f, o);
-    (senderID, o) = gkey(f, o);
-    (targetID, o) = gkey(f, o);
+    (sender, o) = gnode(f, o);
+    (targetid, o) = gkey(f, o);
 
     # return out of each case body for a legal message;
     # break out of the case for an illegal one
@@ -443,29 +450,34 @@ Tmsg.unpack(f: array of byte): (int, ref Tmsg)
     * =>
         raise "fail: Tmsg.unpack: bad message type";
     TPing =>
-        return (o, ref Tmsg.Ping(uid, remoteaddr, senderID, targetID));
+        return (o, ref Tmsg.Ping(uid, sender, targetid));
     TStore =>
         key: Key;
         (key, o) = gkey(f, o);
         value: ref StoreItem;
         (value, o) = gstoreitem(f, o);
-        return (o, ref Tmsg.Store(uid, remoteaddr, senderID, targetID, key, value));
+        return (o, ref Tmsg.Store(uid, sender, targetid, key, value));
     TFindNode =>
         key: Key;
         (key, o) = gkey(f, o);
-        return (o, ref Tmsg.FindNode(uid, remoteaddr, senderID, targetID, key));
+        return (o, ref Tmsg.FindNode(uid, sender, targetid, key));
     TFindValue =>
         key: Key;
         (key, o) = gkey(f, o);
-        return (o, ref Tmsg.FindValue(uid, remoteaddr, senderID, targetID, key));
+        return (o, ref Tmsg.FindValue(uid, sender, targetid, key));
     TAskRandezvous =>
-	str: string;
-	(str, o) = gstring(f, o);
-	return (o, ref Tmsg.TAskRandezvous(uid, remoteaddr, senderID, targetID, str);
+	addr: string;
+	id: Key;
+	(id, o) = gkey(f, o);
+	(addr, o) = gstring(f, o);
+	return (o, ref Tmsg.AskRandezvous(uid, sender, targetid, id, addr));
     TInvitation =>
-	str: string;
-	(str, o) = gstring(f, o);
-	return (o, ref Tmsg.TAskRandezvous(uid, remoteaddr, senderID, targetID, str);
+	oppprvaddr, opppubaddr: string;
+	oppid: Key;
+	(oppprvaddr, o) = gstring(f, o);
+	(opppubaddr, o) = gstring(f, o);
+	(oppid, o) = gkey(f, o);
+	return (o, ref Tmsg.Invitation(uid, sender, targetid, oppprvaddr, opppubaddr, oppid));
     }
     raise "fail: Tmsg.unpack: malformed packet";
 }
@@ -474,14 +486,16 @@ tmsgname := array[] of {
 tagof Tmsg.Ping => "Ping",
 tagof Tmsg.Store => "Store",
 tagof Tmsg.FindNode => "FindNode",
-tagof Tmsg.FindValue => "FindValue"
+tagof Tmsg.FindValue => "FindValue",
 tagof Tmsg.AskRandezvous => "AskRandezvous",
 tagof Tmsg.Invitation => "Invitation"
 };
 
 Tmsg.text(t: self ref Tmsg): string
 {
-    s := sys->sprint("Tmsg.%s(%s,%s,%s->%s,", tmsgname[tagof t], t.uid.text(), t.remoteaddr, t.senderID.text(), t.targetID.text());
+    s := sys->sprint("Tmsg.%s(%s,[%s/%s],%s->%s,", tmsgname[tagof t], t.uid.text(), 
+                                  t.sender.prvaddr, t.sender.pubaddr, 
+				  t.sender.id.text(), t.targetid.text());
     pick m:= t {
     * =>
         return s + ",ILLEGAL)";
@@ -492,8 +506,10 @@ Tmsg.text(t: self ref Tmsg): string
         return s + sys->sprint("%s,arr[%ud])", m.key.text(), len m.value.data);
     FindNode or FindValue =>
         return s + sys->sprint("%s)", m.key.text());
-    AskRandezvous or Invitation =>
-        return s + sys->sprint("%s)", m.addr);
+    AskRandezvous =>
+        return s + sys->sprint("(OppAddr, ID) = (%s, %s))", m.addr, m.oppid.text());
+    Invitation =>
+        return s + sys->sprint("%s)", m.oppid.text());
     }
 }
 
@@ -510,7 +526,7 @@ rtag2type := array[] of {
 tagof Rmsg.Ping => RPing,
 tagof Rmsg.Store => RStore,
 tagof Rmsg.FindNode => RFindNode,
-tagof Rmsg.FindValue => RFindValue
+tagof Rmsg.FindValue => RFindValue,
 tagof Rmsg.AskRandezvous => RAskRandezvous,
 tagof Rmsg.Invitation => RInvitation
 };
@@ -526,7 +542,6 @@ Rmsg.packedsize(r: self ref Rmsg): int
     if(mtype <= 0)
         return 0;
     ml := hdrlen[mtype];
-    ml += len array of byte r.remoteaddr;
     pick m := r {
     Ping =>
         # no dynamic data
@@ -536,13 +551,17 @@ Rmsg.packedsize(r: self ref Rmsg): int
         for (i := 0; i < len m.nodes; i++)
         {
             ml += KEY + BIT32SZ + LEN;
-            ml += len (array of byte m.nodes[i].addr);
+            ml += len (array of byte m.nodes[i].prvaddr);
+            ml += len (array of byte m.nodes[i].pubaddr);
+            ml += len (array of byte m.nodes[i].srvaddr);
         }
     FindValue =>
         for (i := 0; i < len m.nodes; i++)
         {
             ml += KEY + BIT32SZ + LEN;
-            ml += len (array of byte m.nodes[i].addr);
+            ml += len (array of byte m.nodes[i].prvaddr);
+            ml += len (array of byte m.nodes[i].pubaddr);
+            ml += len (array of byte m.nodes[i].srvaddr);
         }
         for (tail := m.value; tail != nil; tail = tl tail)
         {
@@ -553,7 +572,7 @@ Rmsg.packedsize(r: self ref Rmsg): int
             ml += BIT32SZ;
         }
     AskRandezvous =>
-        # no dynamic data
+        # no dynamic data 
     Invitation =>
         # no dynamic data
     }
@@ -570,9 +589,8 @@ Rmsg.pack(r: self ref Rmsg): array of byte
     o = p32(d, o, ds);
     d[o++] = byte rtag2type[tagof r];
     o = pkey(d, o, r.uid);
-    o = pstring(d, o, r.remoteaddr);
-    o = pkey(d, o, r.senderID);
-    o = pkey(d, o, r.targetID);
+    o = pkey(d, o, r.senderid);
+    o = pkey(d, o, r.targetid);
 
     pick m := r {
     Ping =>
@@ -626,29 +644,29 @@ Rmsg.unpack(f: array of byte): (int, ref Rmsg)
     * =>
         raise "fail: Rmsg.unpack: bad message type";
     RPing =>
-        return (o, ref Rmsg.Ping(uid, remoteaddr, senderID, targetID));
+        return (o, ref Rmsg.Ping(uid, senderID, targetID));
     RStore =>
         result: int;
         (result, o) = g32(f, o);
-        return (o, ref Rmsg.Store(uid, remoteaddr, senderID, targetID, result));
+        return (o, ref Rmsg.Store(uid, senderID, targetID, result));
     RFindNode =>
         nodes: array of Node;
         (nodes, o) = gnodes(f, o);
-        return (o, ref Rmsg.FindNode(uid, remoteaddr, senderID, targetID, nodes));
+        return (o, ref Rmsg.FindNode(uid, senderID, targetID, nodes));
     RFindValue =>
         nodes: array of Node;
         (nodes, o) = gnodes(f, o);
         value: list of ref StoreItem;
         (value, o) = gvalue(f, o);
-        return (o, ref Rmsg.FindValue(uid, remoteaddr, senderID, targetID, nodes, value));
+        return (o, ref Rmsg.FindValue(uid, senderID, targetID, nodes, value));
     RAskRandezvous =>
         result: int;
         (result, o) = g32(f, o);
-        return (o, ref Rmsg.AskRandezvous(uid, remoteaddr, senderID, targetID, result));
+        return (o, ref Rmsg.AskRandezvous(uid, senderID, targetID, result));
     RInvitation =>
         result: int;
         (result, o) = g32(f, o);
-        return (o, ref Rmsg.Invitation(uid, remoteaddr, senderID, targetID, result));
+        return (o, ref Rmsg.Invitation(uid, senderID, targetID, result));
     }
     raise "fail: Rmsg.unpack: malformed packet";
 }
@@ -657,14 +675,14 @@ Rmsgname := array[] of {
 tagof Rmsg.Ping => "Ping",
 tagof Rmsg.Store => "Store",
 tagof Rmsg.FindNode => "FindNode",
-tagof Rmsg.FindValue => "FindValue"
+tagof Rmsg.FindValue => "FindValue",
 tagof Rmsg.AskRandezvous => "AskRandezvous",
 tagof Rmsg.Invitation => "Invitation"
 };
 
 Rmsg.text(r: self ref Rmsg): string
 {
-    s := sys->sprint("Rmsg.%s(%s,%s,%s->%s,", Rmsgname[tagof r], r.uid.text(), r.remoteaddr, r.senderID.text(), r.targetID.text());
+    s := sys->sprint("Rmsg.%s(%s,%s->%s,", Rmsgname[tagof r], r.uid.text(), r.senderid.text(), r.targetid.text());
     pick m:= r {
     * =>
         return s + ",ILLEGAL)";
@@ -736,8 +754,8 @@ Node.text(n: self ref Node): string
 {
     if (n == nil)
         return "Node(nil)";
-    return sys->sprint("Node(%s,Prv:%s,Pub:%s,Srv:%s,%ud)", n.id.text(), 
-                                n.prvaddr, n.pubaddr, n.srvaddr n.rtt);
+    return sys->sprint("Node(%s,[%s/%s],Srv:%s)", n.id.text(), 
+                                 n.prvaddr, n.pubaddr, n.srvaddr);
 }
 
 StoreItem.eq(a, b: ref StoreItem): int
@@ -759,10 +777,10 @@ Bucket.addnode(b: self ref Bucket, n: ref Node): int
     if (len b.nodes >= K)
         return EBucketFull;
     if (b.findnode(n.id) != -1)
-        return EAlreadyPresent; # Wouldn't it be better to automaticaly update?
+        return EAlreadyPresent; 
     newnodes := array [len b.nodes + 1] of Node;
     newnodes[:] = b.nodes[:];
-    newnodes[len b.nodes] = Node(n.id, n.prvaddr, n.pubaddr, n.srvaddr, n.rtt);
+    newnodes[len b.nodes] = Node(n.id, n.prvaddr, n.pubaddr, n.srvaddr, n.srvid);
     b.nodes = newnodes;
     return 0;
 }
@@ -820,8 +838,7 @@ Contacts.addcontact(c: self ref Contacts, n: ref Node)
             else
             {
                 node := ref c.buckets[bucketInd].nodes[0];
-                msg := ref Tmsg.Ping(Key.generate(), node.addr,
-                    c.local.node.id, node.id);
+                msg := ref Tmsg.Ping(Key.generate(), c.local.node, node.id);
                 ch := c.local.sendtmsg(node, msg);
                 if (ch != nil)
                     spawn replacefirstnode(c, *n, *node, ch, msg.uid);
@@ -989,19 +1006,19 @@ Local.processtmsg(l: self ref Local, buf: array of byte)
         (nil, msg) := Tmsg.unpack(buf);
         l.logevent("processtmsg", "Incoming Tmsg received");
         l.logevent("processtmsg", "Dump: " + msg.text());
-        if (!msg.targetID.eq(l.node.id))
+        if (!msg.targetid.eq(l.node.id))
         {
             l.logevent("processtmsg", "The message is discarder, target id error");
             return;
         }
 
 #TRAVERSE TODO: Message vivisection
-        sender := ref Node(msg.senderID, msg.remoteaddr, 0);
+        sender := ref msg.sender;
 
+	answer: ref Rmsg;
         pick m := msg {
             Ping =>
-                answer := ref Rmsg.Ping(m.uid, l.node.pubaddr, l.node.id, m.senderID);
-                l.sendrmsg(sender, answer);
+                answer = ref Rmsg.Ping(m.uid, l.node.id, sender.id);
             Store =>
                 result := SFail;
                 # insert or update in our node's storage
@@ -1011,12 +1028,10 @@ Local.processtmsg(l: self ref Local, buf: array of byte)
                     l.storech <-= (m.key.text(), m.value, replacement, l.store);
                     result := SSuccess;
                 }
-                answer := ref Rmsg.Store(m.uid, l.node.pubaddr, l.node.id, m.senderID, result);
-                l.sendrmsg(sender, answer);
+                answer = ref Rmsg.Store(m.uid, l.node.id, sender.id, result);
             FindNode =>
                 nodes := l.contacts.findclosenodes(m.key);
-                answer := ref Rmsg.FindNode(m.uid, l.node.pubaddr, l.node.id, m.senderID, nodes);
-                l.sendrmsg(sender, answer);
+                answer = ref Rmsg.FindNode(m.uid, l.node.id, sender.id, nodes);
             FindValue =>
                 nodes := array [0] of Node;
                 value: list of ref StoreItem;
@@ -1025,21 +1040,26 @@ Local.processtmsg(l: self ref Local, buf: array of byte)
                     nodes = l.contacts.findclosenodes(m.key);
                 else
                     value = items;
-                answer := ref Rmsg.FindValue(m.uid, l.node.pubaddr, l.node.id, m.senderID, nodes, value);
-                l.sendrmsg(sender, answer);
+                answer = ref Rmsg.FindValue(m.uid, l.node.id, sender.id, nodes, value);
 	    AskRandezvous =>
-#TRAVERSE TODO: Making it async seems the best way.
-		spawn l.processrandezvousquery(m);
+		spawn l.processrandezvousquery(m, sender);
 	    Invitation => 
-		#All in all, it'll be ignored in any case
-		traverser := ref Rmsg.Ping(m.uid, l.node.pubaddr, l.node.id, m.senderID);
-		l.sendrmsg(m.address, traversr);
-		answer := ref Rmsg.Invitation(m.uid, l.node.pubaddr, l.node.id, m.senderID, RSuccess);
-		l.sendrmsg(sender, answer);
+		traverser := ref Rmsg.Ping(m.uid, l.node.id, m.oppid);
+		l.sendrmsg(m.opppubaddr, traverser);
+		if (m.opppubaddr != m.oppprvaddr)
+		    l.sendrmsg(m.oppprvaddr, traverser);
+		answer = ref Rmsg.Invitation(m.uid, l.node.id, sender.id, RSuccess);
         }
 
         # add every incoming node
         l.contactsch <-= (QAddContact, sender);
+        # TRAVERSE TODO Bad =( Need to find out real public IP previously
+	if (answer != nil)
+	{
+	    l.sendrmsg(sender.pubaddr, answer);
+	    if (sender.pubaddr != sender.prvaddr)
+		l.sendrmsg(sender.prvaddr, answer);
+	}
     }
 #    exception e
 #    {
@@ -1053,7 +1073,7 @@ Local.processrmsg(l: self ref Local, buf: array of byte)
         (nil, msg) := Rmsg.unpack(buf);
         l.logevent("processrmsg", "Incoming Rmsg received.");
         l.logevent("processrmsg", "Dump: " + msg.text());
-        if (!msg.targetID.eq(l.node.id))
+        if (!msg.targetid.eq(l.node.id))
         {
             l.logevent("processrmsg", "The message is discarder, target id error");
             return;
@@ -1198,16 +1218,18 @@ Local.storeproc(l: self ref Local)
 }
 Local.sendtmsg(l: self ref Local, n: ref Node, msg: ref Tmsg): chan of ref Rmsg
 {
-    isdirect := 1;
-    if (n.pubaddr != n.prvaddr)
+    # TRAVERSE TODO: do it somewhere else in reaction to message wait timeout?
+    if (n.pubaddr != n.prvaddr && l.contacts.getnode(n.id) == nil)  
+    # TRAVERSE TODO Quite bad, it could still be unreachable even if in contacts
+    # TRAVERSE TODO Same NAT?
     {
-	l.logevent("sendtmsg", sys->sprint("Trying to establish randezvous at: %s", n.srvaddr);
-        isdirect = l.askrandezvous(n.srvaddr, n.pubaddr);
-	if (!isdirect)
+	l.logevent("sendtmsg", sys->sprint("Trying to establish randezvous at: %s", n.srvaddr));
+        isdirect := l.askrandezvous(n.pubaddr, n.srvaddr, n.id, n.srvid);
+	if (isdirect)
 	{
+            # Here and below, do not throw anything by now
 	    l.logevent("sendtmsg", sys->sprint("Traverse error: unable to establish randezvous"));
 	    #raise sys->sprint("fail:sendtmsg:send error:%r");
-	    return nil;
 	}
     }
     l.logevent("sendtmsg", "Sending message to " + n.text());
@@ -1216,22 +1238,26 @@ Local.sendtmsg(l: self ref Local, n: ref Node, msg: ref Tmsg): chan of ref Rmsg
 
     buf := msg.pack();
     (err, c) := sys->dial(n.pubaddr, "");
-    # Here and below, do not throw anything by now
     if (err != 0)
         l.logevent("sendtmsg", sys->sprint("Send error: %r"));
         #raise sys->sprint("fail:sendtmsg:send error:%r");
 
     l.callbacksch <-= (QAddCallback, msg.uid.text(), ch);
     sys->write(c.dfd, buf, len buf);
+    if (n.pubaddr != n.prvaddr)
+    {
+	    (err, c) = sys->dial(n.prvaddr, "");
+	    sys->write(c.dfd, buf, len buf);
+    }
     return ch;
 }
-Local.sendrmsg(l: self ref Local, n: ref Node, msg: ref Rmsg)
+Local.sendrmsg(l: self ref Local, addr: string, msg: ref Rmsg)
 {
-    l.logevent("sendrmsg", "Sending message to " + n.text());
+    l.logevent("sendrmsg", "Sending message to " + addr);
     l.logevent("sendrmsg", "Dump: " + msg.text());
 
     buf := msg.pack();
-    (err, c) := sys->dial(n.pubaddr, "");
+    (err, c) := sys->dial(addr, "");
     if (err != 0)
         l.logevent("sendrsmsg", sys->sprint("Send error: %r"));
         #raise sys->sprint("fail:senrdmsg:send error:%r");
@@ -1276,7 +1302,7 @@ Local.dhtfindnode(l: self ref Local, id: Key, nodes: array of ref Node): ref Nod
     l.logevent("dhtfindnode", "Starting node array size: " + string len nodes);
     if (nodes == nil)
         nodes = toref(l.contacts.findclosenodes(id));
-    asked := hashtable->new(HASHSIZE, ref Node(Key.generate(), "", 0));
+    asked := hashtable->new(HASHSIZE, ref Node(Key.generate(), "", "", "", Key.generate()));
     asked.insert(l.node.id.text(), ref l.node);
     (node, nil) := dhtfindnode(l, id, nodes, asked, 1, 0);
     return node;
@@ -1290,7 +1316,7 @@ Local.dhtfindvalue(l: self ref Local, id: Key): list of ref StoreItem
     realnodes[:] = nodes[:];
     realnodes[len nodes] = ref l.node;
     l.logevent("dhtfindvalue", "Starting nodes count: " + string len realnodes);
-    asked := hashtable->new(HASHSIZE, ref Node(Key.generate(), "", 0));
+    asked := hashtable->new(HASHSIZE, ref Node(Key.generate(), "", "", "", Key.generate()));
     (nil, items) := dhtfindnode(l, id, realnodes, asked, 0, 1);
     return items;
 }
@@ -1314,7 +1340,7 @@ Local.findkclosest(l: self ref Local, id: Key): array of ref Node
 {
     l.logevent("findkclosest", "Started to search for K closest: " + id.text());
     nodes := toref(l.contacts.findclosenodes(id));
-    asked := hashtable->new(HASHSIZE, ref Node(Key.generate(), "", 0));
+    asked := hashtable->new(HASHSIZE, ref Node(Key.generate(), "", "", "", Key.generate()));
     asked.insert(l.node.id.text(), ref l.node);
     dhtfindnode(l, id, nodes, asked, 0, 0);
     askedlist := asked.all();
@@ -1413,7 +1439,7 @@ Local.dhtping(l: self ref Local, id: Key): int
         raise "fail:dhtping:ping node not found";
 
     l.logevent("dhtping", "Dht ping called with " + id.text());
-    msg := ref Tmsg.Ping(Key.generate(), l.node.pubaddr, l.node.id, id);
+    msg := ref Tmsg.Ping(Key.generate(), l.node, id);
     ch := l.sendtmsg(node, msg);
 
     sendtime := sys->millisec();
@@ -1427,7 +1453,7 @@ Local.dhtping(l: self ref Local, id: Key): int
             pick m := answer {
                 Ping =>
                     spawn timerreaper(killerch);
-                    if (!m.senderID.eq(id))
+                    if (!m.senderid.eq(id))
                     {
                         l.logevent("dhtping", "Received answer from unexpected node");
                         break;
@@ -1443,13 +1469,74 @@ Local.dhtping(l: self ref Local, id: Key): int
     l.callbacksch <-= (QRemoveCallback, msg.uid.text(), nil);
     return result;
 }
-#TRAVERSE TODO
-Local.processrandezvousquery(l: self ref Local, m: Tmsg.AskRandezvous)
+Local.processrandezvousquery(l: self ref Local, m: ref Tmsg.AskRandezvous, askingnode: ref Node)
 {
-    l.logevent("processrandezvous", "Randezvous for " + m.addr + " <-> " + m.node + ".");
+    l.logevent("processrandezvous", "Randezvous for " + m.sender.id.text() + " <-> " + m.oppid.text() + ".");
+    invitation := ref Tmsg.Invitation(Key.generate(), l.node, m.oppid,
+						  askingnode.prvaddr, askingnode.pubaddr, askingnode.id);
+    askednode := ref Node(m.oppid, m.addr, m.addr, m.addr, Key.generate());
+    ch := l.sendtmsg(askednode, invitation);
+
+    killerch := chan of int;
+    spawn timer(killerch, 1000);
+
+    result := RFail;
+    alt {
+        ans := <-ch =>
+            pick m := ans {
+                Invitation =>
+                    spawn timerreaper(killerch);
+                    if (!m.senderid.eq(l.node.id)) 
+                    {
+                        l.logevent("processrandezvous", "Received answer from unexpected node");
+                        break;
+                    }
+		    if (m.result == SSuccess)
+                        result = RSuccess;
+                * =>
+                    spawn timerreaper(killerch);
+                    l.logevent("processrandezvous", "Received answer, but not the desired message format");
+            }
+        <-killerch =>
+            l.logevent("processrandezvous", "Waiting timeout");
+    }
+    l.callbacksch <-= (QRemoveCallback, invitation.uid.text(), nil);
+    answer := ref Rmsg.AskRandezvous(m.uid, l.node.id, askingnode.id, result);
+    l.sendrmsg(askingnode.pubaddr, answer);
+    if (askingnode.pubaddr != askingnode.prvaddr)
+       l.sendrmsg(askingnode.prvaddr, answer);
 }
-Local.askrandezvous(l: self ref Local, srvaddr, nodeaddr: string): int
+Local.askrandezvous(l: self ref Local, nodeaddr, srvaddr: string, nodeid, srvid: Key): int
 {
+    l.logevent("askrandezvous", "Asking " + srvaddr + " for randezvous with " + nodeaddr + ".");
+    askrandezvous := ref Tmsg.AskRandezvous(Key.generate(), l.node, srvid, nodeid, nodeaddr);
+    server := ref Node(srvid, srvaddr, srvaddr, srvaddr, srvid);
+    ch := l.sendtmsg(server, askrandezvous);
+
+    killerch := chan of int;
+    spawn timer(killerch, 1000);
+
+    result := RFail;
+    alt {
+        answer := <-ch =>
+            pick m := answer {
+                AskRandezvous =>
+                    spawn timerreaper(killerch);
+                    if (!m.senderid.eq(l.node.id)) 
+                    {
+                        l.logevent("askrandezvous", "Received answer from unexpected node");
+                        break;
+                    }
+		    result = m.result;
+                * =>
+                    spawn timerreaper(killerch);
+                    l.logevent("askrandezvous", "Received answer, but not the desired message format");
+            }
+        <-killerch =>
+            l.logevent("askrandezvous", "Waiting timeout");
+    }
+    l.callbacksch <-= (QRemoveCallback, askrandezvous.uid.text(), nil);
+    return result;
 }
 # Callbacks
 timer(ch: chan of int, timeout: int)
@@ -1467,12 +1554,12 @@ replacefirstnode(c: ref Contacts, toadd: Node, pingnode: Node, ch: chan of ref R
             pick m := answer {
                 Ping =>
                     spawn timerreaper(killerch);
-                    if (!m.senderID.eq(pingnode.id))
+                    if (!m.senderid.eq(pingnode.id))
                     {
                         c.local.logevent("replacefirstnode", "Received answer from unexpected node");
                         break;
                     }
-                    c.local.contactsch <-= (QRemoveContact, ref Node(pingnode.id, "", 0));
+                    c.local.contactsch <-= (QRemoveContact, ref Node(pingnode.id, "", "", "", Key.generate()));
                     c.local.contactsch <-= (QAddContact, ref pingnode);
                 * =>
                     spawn timerreaper(killerch);
@@ -1480,7 +1567,7 @@ replacefirstnode(c: ref Contacts, toadd: Node, pingnode: Node, ch: chan of ref R
             }
         <-killerch =>
             c.local.logevent("replacefirstnode", "Answer not received, killing node");
-            c.local.contactsch <-= (QRemoveContact, ref Node(pingnode.id, "", 0));
+            c.local.contactsch <-= (QRemoveContact, ref Node(pingnode.id, "", "", "", Key.generate()));
             c.local.contactsch <-= (QAddContact, ref toadd);
     }
     c.local.callbacksch <-= (QRemoveCallback, uid.text(), nil);
@@ -1490,16 +1577,16 @@ findnode(l: ref Local, targetnode: ref Node, uid: Key, rch: chan of ref Rmsg, re
     l.logevent("findnode", "Findnode called, with key " + uid.text());
     msg: ref Tmsg;
     if (retrievevalue)
-        msg = ref Tmsg.FindValue(Key.generate(), l.node.pubaddr, l.node.id, targetnode.id, uid);
+        msg = ref Tmsg.FindValue(Key.generate(), l.node, targetnode.id, uid);
     else
-        msg = ref Tmsg.FindNode(Key.generate(), l.node.pubaddr, l.node.id, targetnode.id, uid);
+        msg = ref Tmsg.FindNode(Key.generate(), l.node, targetnode.id, uid);
     ch := l.sendtmsg(targetnode, msg);
     answer: ref Rmsg;
     killerch := chan of int;
     spawn timer(killerch, 2000);
     alt {
         answer = <-ch =>
-            if (!answer.senderID.eq(targetnode.id))
+            if (!answer.senderid.eq(targetnode.id))
             {
                 l.logevent("findnode", "Received answer from unexpected node");
                 rch <-= nil;
@@ -1539,8 +1626,7 @@ store(l: ref Local, where: ref Node, key: Key, value: ref StoreItem)
 {
     l.logevent("store", "Store called with key " + key.text());
     l.logevent("store", "Storing to  " + where.text());
-    msg := ref Tmsg.Store(Key.generate(), l.node.pubaddr, l.node.id,
-               where.id, key, value);
+    msg := ref Tmsg.Store(Key.generate(), l.node, where.id, key, value);
     ch := l.sendtmsg(where, msg);
     answer: ref Rmsg;
     killerch := chan of int;
@@ -1550,7 +1636,7 @@ store(l: ref Local, where: ref Node, key: Key, value: ref StoreItem)
             pick m := answer {
                 Store =>
                     spawn timerreaper(killerch);
-                    if (!m.senderID.eq(where.id))
+                    if (!m.senderid.eq(where.id))
                     {
                         l.logevent("store", "Received answer from unexpected node");
                         break;
@@ -1558,9 +1644,9 @@ store(l: ref Local, where: ref Node, key: Key, value: ref StoreItem)
                     # check result code
                     case m.result {
                         SSuccess =>
-                            l.logevent("store", "Store to " + m.senderID.text() + ": success");
+                            l.logevent("store", "Store to " + m.senderid.text() + ": success");
                         SFail =>
-                            l.logevent("store", "Store to " + m.senderID.text() + ": fail");
+                            l.logevent("store", "Store to " + m.senderid.text() + ": fail");
                     } 
                 * =>
                     spawn timerreaper(killerch);
@@ -1574,7 +1660,8 @@ store(l: ref Local, where: ref Node, key: Key, value: ref StoreItem)
 
 start(localaddr: string, bootstrap: array of ref Node, id: Key, logfd: ref Sys->FD): ref Local
 {
-    node := Node(id, localaddr, localaddr, bootstrap[0], 0);
+#TRAVERSE TODO: Find out public at bootstrap
+    node := Node(id, localaddr, localaddr, bootstrap[0].pubaddr, bootstrap[0].id);
     contacts := ref Contacts(array [1] of ref Bucket, nil);
     # construct the first bucket
     contacts.buckets[0] = ref Bucket(array [0] of Node,

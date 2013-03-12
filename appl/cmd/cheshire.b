@@ -713,7 +713,8 @@ strapparse(s: string): array of ref Node
         (nil, blocks) := sys->tokenize(hd it, " ");
         if (blocks == nil || len blocks != 2 || (hd blocks)[:1] == "#")
             continue;
-        ret[i++] = ref Node(*Key.parse(hd blocks), hd tl blocks, 0);
+        ret[i++] = ref Node(*Key.parse(hd blocks), hd tl blocks, hd tl blocks, 
+                                                   hd tl blocks, *Key.parse(hd blocks));
     }
     return ret[:i];
 }
