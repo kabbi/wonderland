@@ -39,6 +39,8 @@ Dht: module
     RAskRandezvous,
     TInvitation,    # 110
     RInvitation,
+    TObserve,    # 112
+    RObserve,
     Tmax: con 100+iota;
 
     # DHT functions error codes
@@ -110,6 +112,8 @@ Dht: module
             oppprvaddr: string;
             opppubaddr: string;
             oppid: Key;
+        Observe =>
+            # no data
         }
 
         read:   fn(fd: ref Sys->FD, msize: int): ref Tmsg;
@@ -138,6 +142,8 @@ Dht: module
             result: int;
         Invitation =>
             result: int;
+        Observe =>
+            observedaddr: string;
         }
 
         read:   fn(fd: ref Sys->FD, msize: int): ref Rmsg;

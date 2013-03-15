@@ -59,10 +59,13 @@ TFindValue =>        H+KEY+TH,            # no data
 RFindValue =>        H+LEN+LEN,           # nodes[4+] value[4+]
 
 TAskRandezvous =>    H+LEN+KEY+TH,        # address + key
-RAskRandezvous =>    H+BIT32SZ+TH,        # result
+RAskRandezvous =>    H+BIT32SZ,           # result
 
 TInvitation =>       H+LEN+LEN+KEY+TH,    # {pub, prv}address[4+] + key[20]
 RInvitation =>       H+BIT32SZ,           # result
+
+TObserve =>          H+TH,    		  # no data
+RObserve =>          H+BIT32SZ,           # result[4+]
 };
 
 badmodule(p: string)
@@ -352,6 +355,7 @@ tagof Tmsg.FindNode => TFindNode,
 tagof Tmsg.FindValue => TFindValue,
 tagof Tmsg.AskRandezvous => TAskRandezvous,
 tagof Tmsg.Invitation => TInvitation,
+tagof Tmsg.Observe => TObserve
 };
 
 Tmsg.mtype(t: self ref Tmsg): int
@@ -379,6 +383,8 @@ Tmsg.packedsize(t: self ref Tmsg): int
 	ml += len m.addr;
     Invitation =>
 	ml += len m.oppprvaddr + len m.opppubaddr;
+    Observe =>
+        # no dynamic data
     }
     return ml;
 }
@@ -411,6 +417,8 @@ Tmsg.pack(t: self ref Tmsg): array of byte
 	o = pstring(d, o, m.oppprvaddr);
 	o = pstring(d, o, m.opppubaddr);
 	o = pkey(d, o, m.oppid);
+    Observe =>
+    	# no data 
     * =>
         raise "fail: Tmsg.pack: bad message type";
     }
@@ -478,6 +486,8 @@ Tmsg.unpack(f: array of byte): (int, ref Tmsg)
 	(opppubaddr, o) = gstring(f, o);
 	(oppid, o) = gkey(f, o);
 	return (o, ref Tmsg.Invitation(uid, sender, targetid, oppprvaddr, opppubaddr, oppid));
+    TObserve =>
+        return (o, ref Tmsg.Observe(uid, sender, targetid));
     }
     raise "fail: Tmsg.unpack: malformed packet";
 }
@@ -488,7 +498,8 @@ tagof Tmsg.Store => "Store",
 tagof Tmsg.FindNode => "FindNode",
 tagof Tmsg.FindValue => "FindValue",
 tagof Tmsg.AskRandezvous => "AskRandezvous",
-tagof Tmsg.Invitation => "Invitation"
+tagof Tmsg.Invitation => "Invitation",
+tagof Tmsg.Observe => "Observe"
 };
 
 Tmsg.text(t: self ref Tmsg): string
@@ -510,6 +521,9 @@ Tmsg.text(t: self ref Tmsg): string
         return s + sys->sprint("(OppAddr, ID) = (%s, %s))", m.addr, m.oppid.text());
     Invitation =>
         return s + sys->sprint("%s)", m.oppid.text());
+    Observe =>
+        # no data
+        return s + ")";
     }
 }
 
@@ -528,7 +542,8 @@ tagof Rmsg.Store => RStore,
 tagof Rmsg.FindNode => RFindNode,
 tagof Rmsg.FindValue => RFindValue,
 tagof Rmsg.AskRandezvous => RAskRandezvous,
-tagof Rmsg.Invitation => RInvitation
+tagof Rmsg.Invitation => RInvitation,
+tagof Rmsg.Observe => RObserve
 };
 
 Rmsg.mtype(r: self ref Rmsg): int
@@ -575,6 +590,8 @@ Rmsg.packedsize(r: self ref Rmsg): int
         # no dynamic data 
     Invitation =>
         # no dynamic data
+    Observe =>
+	ml += len m.observedaddr;
     }
     return ml;
 }
@@ -606,6 +623,8 @@ Rmsg.pack(r: self ref Rmsg): array of byte
         o = p32(d, o, m.result);
     Invitation =>
         o = p32(d, o, m.result);
+    Observe =>
+    	o = pstring(d, o, m.observedaddr);
     * =>
         raise "fail: Rmsg.pack: bad message type";
     }
@@ -667,6 +686,10 @@ Rmsg.unpack(f: array of byte): (int, ref Rmsg)
         result: int;
         (result, o) = g32(f, o);
         return (o, ref Rmsg.Invitation(uid, senderID, targetID, result));
+    RObserve =>
+        observedaddr: string;
+	(observedaddr, o) = gstring(f, o);
+	return (o, ref Rmsg.Observe(uid, senderID, targetID, observedaddr));
     }
     raise "fail: Rmsg.unpack: malformed packet";
 }
@@ -677,7 +700,8 @@ tagof Rmsg.Store => "Store",
 tagof Rmsg.FindNode => "FindNode",
 tagof Rmsg.FindValue => "FindValue",
 tagof Rmsg.AskRandezvous => "AskRandezvous",
-tagof Rmsg.Invitation => "Invitation"
+tagof Rmsg.Invitation => "Invitation",
+tagof Rmsg.Observe => "Observe"
 };
 
 Rmsg.text(r: self ref Rmsg): string
@@ -713,6 +737,9 @@ Rmsg.text(r: self ref Rmsg): string
         return s + sys->sprint("%ud)", m.result);
     Invitation =>
         return s + sys->sprint("%ud)", m.result);
+    Observe =>
+        # no data
+	return s + ")";
     }
 }
 
@@ -1012,8 +1039,8 @@ Local.processtmsg(l: self ref Local, buf: array of byte)
             return;
         }
 
-#TRAVERSE TODO: Message vivisection
         sender := ref msg.sender;
+	shouldadd := 1;
 
 	answer: ref Rmsg;
         pick m := msg {
@@ -1049,11 +1076,14 @@ Local.processtmsg(l: self ref Local, buf: array of byte)
 		if (m.opppubaddr != m.oppprvaddr)
 		    l.sendrmsg(m.oppprvaddr, traverser);
 		answer = ref Rmsg.Invitation(m.uid, l.node.id, sender.id, RSuccess);
+	    Observe =>
+	    	shouldadd = 0;
+		#TRAVERSE TODO: Message vivisection goes here
         }
 
-        # add every incoming node
-        l.contactsch <-= (QAddContact, sender);
-        # TRAVERSE TODO Bad =( Need to find out real public IP previously
+        # add every incoming node except for observed
+	if (shouldadd)
+	    l.contactsch <-= (QAddContact, sender);
 	if (answer != nil)
 	{
 	    l.sendrmsg(sender.pubaddr, answer);
@@ -1221,7 +1251,6 @@ Local.sendtmsg(l: self ref Local, n: ref Node, msg: ref Tmsg): chan of ref Rmsg
     # TRAVERSE TODO: do it somewhere else in reaction to message wait timeout?
     if (n.pubaddr != n.prvaddr && l.contacts.getnode(n.id) == nil)  
     # TRAVERSE TODO Quite bad, it could still be unreachable even if in contacts
-    # TRAVERSE TODO Same NAT?
     {
 	l.logevent("sendtmsg", sys->sprint("Trying to establish randezvous at: %s", n.srvaddr));
         isdirect := l.askrandezvous(n.pubaddr, n.srvaddr, n.id, n.srvid);
@@ -1660,7 +1689,6 @@ store(l: ref Local, where: ref Node, key: Key, value: ref StoreItem)
 
 start(localaddr: string, bootstrap: array of ref Node, id: Key, logfd: ref Sys->FD): ref Local
 {
-#TRAVERSE TODO: Find out public at bootstrap
     node := Node(id, localaddr, localaddr, bootstrap[0].pubaddr, bootstrap[0].id);
     contacts := ref Contacts(array [1] of ref Bucket, nil);
     # construct the first bucket
@@ -1692,7 +1720,38 @@ start(localaddr: string, bootstrap: array of ref Node, id: Key, logfd: ref Sys->
     spawn server.contactsproc();
     spawn server.storeproc();
 
+    msg := ref Tmsg.Observe(Key.generate(), node, bootstrap[0].id);
+    pubaddr: string;
+    rchan := server.sendtmsg(bootstrap[0], msg);
+    killerch := chan of int;
+    spawn timer(killerch, 1000);
+    alt {
+        answer := <-rchan =>
+            pick m := answer {
+                Observe =>
+                    spawn timerreaper(killerch);
+                    if (!m.senderid.eq(bootstrap[0].id))
+                    {
+                        server.logevent("start", "Received answer from unexpected node");
+			break;
+                    }
+		    pubaddr = m.observedaddr;
+                * =>
+                    spawn timerreaper(killerch);
+                    server.logevent("start", "Received answer, but not the desired message format");
+            }
+        <-killerch =>
+            server.logevent("start", "Message wait timeout");
+    }
+    if (pubaddr == nil)
+    {
+	server.destroy();
+        return nil;
+    }
+    server.node.pubaddr = pubaddr;
+    
     server.dhtfindnode(id, bootstrap);
+    server.callbacksch <-= (QRemoveCallback, msg.uid.text(), nil);
 
     return server;
 }
