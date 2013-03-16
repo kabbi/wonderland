@@ -51,7 +51,7 @@ dist(k1, k2: Key): Key
     return r;
 }
 
-initlocal(addr: string, verbose: int): ref Local
+initlocal(addr: string, verbose: int, bootstrap: ref Node): ref Local
 {
     port := random->randomint(random->NotQuiteRandom);
     port &= 16rFFFF; # IP port range
@@ -60,7 +60,9 @@ initlocal(addr: string, verbose: int): ref Local
     if (addr == "")
         addr = "udp!127.0.0.1!" + string port;
 
-    l := dht->start(addr, array [0] of ref Node, Key.generate(), nil);
+    key := Key.generate();
+    l := dht->start(addr, array [] of {bootstrap},
+                    key, nil);
     if (l == nil)
     {
         sys->print("failed to start server!\n%r\n");
@@ -88,368 +90,366 @@ clean(verbose: int): int
 
 print()
 {
-    local.contacts.print(0);
-    sys->print("\n");
+    sys->print("%s\n", local.contacts.text(0));
 }
 
-addnode(key: Key, verbose: int)
-{
-    local.contacts.addcontact(ref Node(key, "explicit", 0));
-    if (verbose)
-        sys->print("Key successfully added.\n");
-}
-
-addrandom(verbose: int): Key
-{
-    key := Key.generate();
-    local.contacts.addcontact(ref Node(key, DEFADDR, 0));
-    if (verbose)
-        sys->print("Added key with id:%s\n", key.text());
-    return key;
-}
-
-removekey(key: Key, verbose: int)
-{
-    if (verbose)
-        sys->print("Deleting node\n");
-    if (local.contacts.buckets[local.contacts.findbucket(key)].findnode(key) == -1)
-    {
-        if (verbose)
-            sys->print("Not found!\n");
-        return;
-    }
-    local.contacts.removecontact(key);
-    if (verbose)
-        sys->print("Successfully deleted\n");
-}
-
-countnodes(verbose: int): int
-{
-    count := 0;
-    for (i := 0; i < len local.contacts.buckets; i++)
-        count += len local.contacts.buckets[i].nodes;
-    if (verbose)
-        sys->print("Node count: %d\n", count);
-    return count;
-}
-
-addrandoms(num: int, verbose: int): array of Key
-{
-    keys := array[num] of Key;
-    if (verbose)
-        sys->print("Adding random nodes\n");
-    for (i := 0; i < num; ++i)
-        keys[i] = addrandom(verbose);
-    if (verbose)
-        sys->print("Nodes added: %d\n", num);
-    return keys;
-}
-
-closest(key: Key, verbose: int): array of Node
-{
-    if (verbose)
-        sys->print("looking for key: %s\n", key.text());
-    close := local.contacts.findclosenodes(key);
-    for (i := 0; i < len close && verbose; i++)
-    {
-        sys->print("Distance from %s = ", (ref close[i]).text());
-        sys->print("%s\n", dist(close[i].id, key).text());
-    }
-    return close;
-}
-
-randomtmsg(): ref Tmsg
-{
-    msgtype := random->randomint(random->NotQuiteRandom) & 16rFF;
-    msgtype = msgtype % 4;
-
-    uid := Key.generate();
-    remoteaddr := "nil";
-    senderID := Key.generate();
-    targetID := Key.generate();
-
-    case msgtype {
-        0 =>
-            return ref Tmsg.Ping(uid, remoteaddr, senderID, targetID);
-        1 =>
-            key := Key.generate();
-            l := random->randomint(random->NotQuiteRandom) & 16rFF;
-            data := random->randombuf(random->NotQuiteRandom, l);
-            ask := random->randomint(random->NotQuiteRandom) & 16rFF;
-            return ref Tmsg.Store(uid, remoteaddr, senderID, targetID, key, ref Dht->StoreItem(data, 0, 0));
-        2 =>
-            key := Key.generate();
-            return ref Tmsg.FindNode(uid, remoteaddr, senderID, targetID, key);
-        3 =>
-            key := Key.generate();
-            return ref Tmsg.FindValue(uid, remoteaddr, senderID, targetID, key);
-    }
-
-    return nil;
-}
-randomrmsg(): ref Rmsg
-{
-    msgtype := random->randomint(random->NotQuiteRandom) & 16rFF;
-    msgtype = msgtype % 4;
-
-    uid := Key.generate();
-    remoteaddr := "nil";
-    senderID := Key.generate();
-    targetID := Key.generate();
-
-    case msgtype {
-        0 =>
-            return ref Rmsg.Ping(uid, remoteaddr, senderID, targetID);
-        1 =>
-            result := random->randomint(random->NotQuiteRandom) & 16rFF;
-            return ref Rmsg.Store(uid, remoteaddr, senderID, targetID, result);
-        2 =>
-            l := random->randomint(random->NotQuiteRandom) & 16rFF;
-            l = l % (K * 2);
-            nodes := array [l] of Node;
-            for (i := 0; i < l; i++)
-                nodes[i] = Node(Key.generate(), "randomnode", 123);
-            return ref Rmsg.FindNode(uid, remoteaddr, senderID, targetID, nodes);
-        3 =>
-            result := random->randomint(random->NotQuiteRandom) & 16rFF;
-            l := random->randomint(random->NotQuiteRandom) & 16rFF;
-            l = l % (K * 2);
-            nodes := array [l] of Node;
-            for (i := 0; i < l; i++)
-                nodes[i] = Node(Key.generate(), "randomnode", 123);
-            l = random->randomint(random->NotQuiteRandom) & 16rFF;
-            data := random->randombuf(random->NotQuiteRandom, l);
-            return ref Rmsg.FindValue(uid, remoteaddr, senderID, targetID, nodes, list of {ref Dht->StoreItem(data, 0, 0)});
-    }
-
-    return nil;
-}
-
-# Tests
-
-# Routing table tests
-
-closesttest(count: int, verbose: int)
-{
-    if (verbose)
-        sys->print("trying to get K closest to the random node\n");
-    addrandoms(count, 0);
-    randomid := Key.generate();
-    close := closest(randomid, 0);
-    b := Bucket(close, Key.generate(), Key.generate(), daytime->now());
-    for (k := 0; k < len close; ++k)
-    {
-        d := dist(randomid, close[k].id);
-        for (i := 0; i < len local.contacts.buckets; ++i)
-            for (j := 0; j < len local.contacts.buckets[i].nodes; ++j)
-            {
-                curnode := local.contacts.buckets[i].nodes[j];
-                if (dist(curnode.id, randomid).lt(d) 
-                      && 
-                    ((ref b).findnode(curnode.id) == -1))
-                {
-                    sys->print("Closest test failed!\n");
-                    sys->print("getclosenodes returned:\n");
-                    (ref b).print(0);
-                    sys->print("... but %s is nearer to\n", 
-                                        curnode.id.text());
-                    sys->print("        %s (randomly picked node) then\n",
-                                        randomid.text());
-                    sys->print("        %s\n",
-                                        close[k].id.text());
-                    sys->print("d(conflict, random) = %s\n", dist(curnode.id, randomid).text());
-                    sys->print("d(closest, random) =  %s\n", d.text());
-                    raise "test fail:closest";
-                }
-            }
-    }
-    if (verbose)
-        sys->print("OK! Closest test passed!\n\n");
-}
-
-randomidinrangetest(count: int, verbose: int) 
-{
-    if (verbose)
-        sys->print("checking randomidinbucketrange on %d random ids\n", count);
-    b := Bucket(array[0] of Node, Key.generate(), Key.generate(), daytime->now());
-    if (verbose)
-    {
-        sys->print("bucket: \n");
-        (ref b).print(0);
-    }
-    if (b.maxrange.lt(b.minrange))
-    {
-        tm := b.maxrange;
-        b.maxrange = b.minrange;
-        b.minrange = tm;
-    }
-    local.contacts.buckets = array[1] of { ref b };
-    for (i := 0; i < count; i++)
-    {
-        key := local.contacts.randomidinbucket(0);
-        if (!(ref b).isinrange(key))
-        {
-            sys->print("noooo, it failed on key %s :(\n", key.text());
-            raise "test fail:randomidinrange";
-        }
-    }
-    if (verbose)
-        sys->print("OK! Randomidinrange test passed!\n\n");
-}
-
-sequentialtest(verbose: int)
-{
-    if (verbose)
-        sys->print("Adding B*K sequential keys\n");
-    for (i := 0; i < B; i++)
-    {
-        for (j := 0; j <= K; j++)
-        {
-            idx := local.contacts.findbucket(local.node.id);
-            node := ref Node(local.contacts.randomidinbucket(idx),
-                "sequential" + string i, 0);
-            local.contacts.addcontact(node);
-        }
-    }
-    if (verbose)
-    {
-        sys->print("OK! Sequential-test passed! Added %d keys\n", countnodes(0));
-        sys->print("Number of buckets: %d\n\n", len local.contacts.buckets);
-    }
-}
-
-filltest(verbose: int)
-{
-    sequentialtest(0);
-    if (verbose)
-        sys->print("Trying to fill the whole routing table\n");
-    for (i := 0; i < len local.contacts.buckets; i++)
-    {
-        for (j := 0; j <= K; j++)
-        {
-            node := ref Node(local.contacts.randomidinbucket(i), "fill test", 0);
-            local.contacts.addcontact(node);
-        }
-    }
-    if (verbose)
-    {
-        sys->print("OK! Total count of contacts: %d\n", countnodes(0));
-        sys->print("Number of buckets: %d\n\n", len local.contacts.buckets);
-    }
-}
-
-# Rmsg/Tmsg tests
-
-randomunpacktest()
-{
-    sys->print("Trying to unpack random buffer\n");
-    l := random->randomint(random->NotQuiteRandom);
-    l = l % (MAXRPC * 2);
-    if (l < 0)
-        l = -l;
-    l += 5;
-    data := random->randombuf(random->NotQuiteRandom, l);
-    data[0] = byte l >> 0;
-    data[1] = byte l >> 8;
-    data[2] = byte l >> 16;
-    data[3] = byte l >> 24;
-
-    data[4] = byte 100;
-    {
-        sys->print("Parsing Tmsg\n");
-        (nil, msg) := Tmsg.unpack(data);
-        sys->print("Aw, success! Message read:\n%s\n", msg.text());
-    }
-    exception e
-    {
-        "fail:*" =>
-            sys->print("Exception catched: %s\n", e);
-    }
-
-    data[4] = byte 101;
-    {
-        sys->print("Parsing Rmsg\n");
-        (nil, msg) := Rmsg.unpack(data);
-        sys->print("Aw, success! Message read:\n%s\n", msg.text());
-    }
-    exception e
-    {
-        "fail:*" =>
-            sys->print("Exception catched: %s\n", e);
-    }
-
-    sys->print("OK! Random unpack test passed!\n");
-    sys->print("\n");
-}
-
-randompacktmsgtest()
-{
-    sys->print("Trying to pack and unpack random Tmsg\n");
-
-    msg := randomtmsg();
-    buf := msg.pack();
-    buflen := len buf;
-    (readlen, newmsg) := Tmsg.unpack(buf);
-    newbuf := newmsg.pack();
-    if (readlen != buflen || !arreq(buf, newbuf))
-    {
-        sys->print("Something went wrong!\n");
-        sys->print("Buffer is %d bytes, processed %d\n", buflen, readlen);
-        sys->print("Message: %s\n", msg.text());
-        sys->print("Unpacked message: %s\n", newmsg.text());
-        raise "test failed:randompacktmsg";
-    }
-
-    sys->print("OK! Random pack test passed!");
-    sys->print("\n");
-}
-randompackrmsgtest()
-{
-    sys->print("Trying to pack and unpack random Rmsg\n");
-
-    msg := randomrmsg();
-    buf := msg.pack();
-    buflen := len buf;
-    (readlen, newmsg) := Rmsg.unpack(buf);
-    newbuf := newmsg.pack();
-    if (readlen != buflen || !arreq(buf, newbuf))
-    {
-        sys->print("Something went wrong!\n");
-        sys->print("Buffer is %d bytes, processed %d\n", buflen, readlen);
-        sys->print("Message: %s\n", msg.text());
-        sys->print("Unpacked message: %s\n", newmsg.text());
-        raise "test failed:randompackrmsg";
-    }
-
-    sys->print("OK! Random pack test passed!");
-    sys->print("\n");
-}
-
-starttest()
-{
-    local = initlocal("", 0);
-    key1 := addrandom(1);
-    key2 := addrandom(1);
-    addnode(key1, 1);
-    addnode(key2, 1);
-    print();
-    clean(0);
-    keys := addrandoms(100, 1);
-    countnodes(1);
-    for (i := 0; i < len keys; i++)
-        removekey(keys[i], 0);
-    if (countnodes(1) != 0)
-    {
-        sys->print("Deletion test failed!\n");
-        raise "test fail:deletion";
-    }
-    for (i = 0; i < 100000; i++)
-    {
-        randompacktmsgtest();
-        randompackrmsgtest();
-        randomunpacktest();
-    }
-}
+#addnode(key: Key, verbose: int)
+#{
+#    local.contacts.addcontact(ref Node(key, "explicit", "explicit", "explicit", 0));
+#    if (verbose)
+#        sys->print("Key successfully added.\n");
+#}
+#
+#addrandom(verbose: int): Key
+#{
+#    key := Key.generate();
+#    local.contacts.addcontact(ref Node(key, DEFADDR, 0));
+#    if (verbose)
+#        sys->print("Added key with id:%s\n", key.text());
+#    return key;
+#}
+#
+#removekey(key: Key, verbose: int)
+#{
+#    if (verbose)
+#        sys->print("Deleting node\n");
+#    if (local.contacts.buckets[local.contacts.findbucket(key)].findnode(key) == -1)
+#    {
+#        if (verbose)
+#            sys->print("Not found!\n");
+#        return;
+#    }
+#    local.contacts.removecontact(key);
+#    if (verbose)
+#        sys->print("Successfully deleted\n");
+#}
+#
+#countnodes(verbose: int): int
+#{
+#    count := 0;
+#    for (i := 0; i < len local.contacts.buckets; i++)
+#        count += len local.contacts.buckets[i].nodes;
+#    if (verbose)
+#        sys->print("Node count: %d\n", count);
+#    return count;
+#}
+#
+#addrandoms(num: int, verbose: int): array of Key
+#{
+#    keys := array[num] of Key;
+#    if (verbose)
+#        sys->print("Adding random nodes\n");
+#    for (i := 0; i < num; ++i)
+#        keys[i] = addrandom(verbose);
+#    if (verbose)
+#        sys->print("Nodes added: %d\n", num);
+#    return keys;
+#}
+#
+#closest(key: Key, verbose: int): array of Node
+#{
+#    if (verbose)
+#        sys->print("looking for key: %s\n", key.text());
+#    close := local.contacts.findclosenodes(key);
+#    for (i := 0; i < len close && verbose; i++)
+#    {
+#        sys->print("Distance from %s = ", (ref close[i]).text());
+#        sys->print("%s\n", dist(close[i].id, key).text());
+#    }
+#    return close;
+#}
+#
+#randomtmsg(): ref Tmsg
+#{
+#    msgtype := random->randomint(random->NotQuiteRandom) & 16rFF;
+#    msgtype = msgtype % 4;
+#
+#    uid := Key.generate();
+#    remoteaddr := "nil";
+#    senderID := Key.generate();
+#    targetID := Key.generate();
+#
+#    case msgtype {
+#        0 =>
+#            return ref Tmsg.Ping(uid, remoteaddr, senderID, targetID);
+#        1 =>
+#            key := Key.generate();
+#            l := random->randomint(random->NotQuiteRandom) & 16rFF;
+#            data := random->randombuf(random->NotQuiteRandom, l);
+#            ask := random->randomint(random->NotQuiteRandom) & 16rFF;
+#            return ref Tmsg.Store(uid, remoteaddr, senderID, targetID, key, ref Dht->StoreItem(data, 0, 0));
+#        2 =>
+#            key := Key.generate();
+#            return ref Tmsg.FindNode(uid, remoteaddr, senderID, targetID, key);
+#        3 =>
+#            key := Key.generate();
+#            return ref Tmsg.FindValue(uid, remoteaddr, senderID, targetID, key);
+#    }
+#
+#    return nil;
+#}
+#randomrmsg(): ref Rmsg
+#{
+#    msgtype := random->randomint(random->NotQuiteRandom) & 16rFF;
+#    msgtype = msgtype % 4;
+#
+#    uid := Key.generate();
+#    remoteaddr := "nil";
+#    senderID := Key.generate();
+#    targetID := Key.generate();
+#
+#    case msgtype {
+#        0 =>
+#            return ref Rmsg.Ping(uid, remoteaddr, senderID, targetID);
+#        1 =>
+#            result := random->randomint(random->NotQuiteRandom) & 16rFF;
+#            return ref Rmsg.Store(uid, remoteaddr, senderID, targetID, result);
+#        2 =>
+#            l := random->randomint(random->NotQuiteRandom) & 16rFF;
+#            l = l % (K * 2);
+#            nodes := array [l] of Node;
+#            for (i := 0; i < l; i++)
+#                nodes[i] = Node(Key.generate(), "randomnode", 123);
+#            return ref Rmsg.FindNode(uid, remoteaddr, senderID, targetID, nodes);
+#        3 =>
+#            result := random->randomint(random->NotQuiteRandom) & 16rFF;
+#            l := random->randomint(random->NotQuiteRandom) & 16rFF;
+#            l = l % (K * 2);
+#            nodes := array [l] of Node;
+#            for (i := 0; i < l; i++)
+#                nodes[i] = Node(Key.generate(), "randomnode", 123);
+#            l = random->randomint(random->NotQuiteRandom) & 16rFF;
+#            data := random->randombuf(random->NotQuiteRandom, l);
+#            return ref Rmsg.FindValue(uid, remoteaddr, senderID, targetID, nodes, list of {ref Dht->StoreItem(data, 0, 0)});
+#    }
+#
+#    return nil;
+#}
+#
+## Tests
+#
+## Routing table tests
+#
+#closesttest(count: int, verbose: int)
+#{
+#    if (verbose)
+#        sys->print("trying to get K closest to the random node\n");
+#    addrandoms(count, 0);
+#    randomid := Key.generate();
+#    close := closest(randomid, 0);
+#    b := Bucket(close, Key.generate(), Key.generate(), daytime->now());
+#    for (k := 0; k < len close; ++k)
+#    {
+#        d := dist(randomid, close[k].id);
+#        for (i := 0; i < len local.contacts.buckets; ++i)
+#            for (j := 0; j < len local.contacts.buckets[i].nodes; ++j)
+#            {
+#                curnode := local.contacts.buckets[i].nodes[j];
+#                if (dist(curnode.id, randomid).lt(d) 
+#                      && 
+#                    ((ref b).findnode(curnode.id) == -1))
+#                {
+#                    sys->print("Closest test failed!\n");
+#                    sys->print("getclosenodes returned:\n");
+#                    (ref b).print(0);
+#                    sys->print("... but %s is nearer to\n", 
+#                                        curnode.id.text());
+#                    sys->print("        %s (randomly picked node) then\n",
+#                                        randomid.text());
+#                    sys->print("        %s\n",
+#                                        close[k].id.text());
+#                    sys->print("d(conflict, random) = %s\n", dist(curnode.id, randomid).text());
+#                    sys->print("d(closest, random) =  %s\n", d.text());
+#                    raise "test fail:closest";
+#                }
+#            }
+#    }
+#    if (verbose)
+#        sys->print("OK! Closest test passed!\n\n");
+#}
+#
+#randomidinrangetest(count: int, verbose: int) 
+#{
+#    if (verbose)
+#        sys->print("checking randomidinbucketrange on %d random ids\n", count);
+#    b := Bucket(array[0] of Node, Key.generate(), Key.generate(), daytime->now());
+#    if (verbose)
+#    {
+#        sys->print("bucket: %s\n", (ref b).print(0));
+#    }
+#    if (b.maxrange.lt(b.minrange))
+#    {
+#        tm := b.maxrange;
+#        b.maxrange = b.minrange;
+#        b.minrange = tm;
+#    }
+#    local.contacts.buckets = array[1] of { ref b };
+#    for (i := 0; i < count; i++)
+#    {
+#        key := local.contacts.randomidinbucket(0);
+#        if (!(ref b).isinrange(key))
+#        {
+#            sys->print("noooo, it failed on key %s :(\n", key.text());
+#            raise "test fail:randomidinrange";
+#        }
+#    }
+#    if (verbose)
+#        sys->print("OK! Randomidinrange test passed!\n\n");
+#}
+#
+#sequentialtest(verbose: int)
+#{
+#    if (verbose)
+#        sys->print("Adding B*K sequential keys\n");
+#    for (i := 0; i < B; i++)
+#    {
+#        for (j := 0; j <= K; j++)
+#        {
+#            idx := local.contacts.findbucket(local.node.id);
+#            node := ref Node(local.contacts.randomidinbucket(idx),
+#                "sequential" + string i, 0);
+#            local.contacts.addcontact(node);
+#        }
+#    }
+#    if (verbose)
+#    {
+#        sys->print("OK! Sequential-test passed! Added %d keys\n", countnodes(0));
+#        sys->print("Number of buckets: %d\n\n", len local.contacts.buckets);
+#    }
+#}
+#
+#filltest(verbose: int)
+#{
+#    sequentialtest(0);
+#    if (verbose)
+#        sys->print("Trying to fill the whole routing table\n");
+#    for (i := 0; i < len local.contacts.buckets; i++)
+#    {
+#        for (j := 0; j <= K; j++)
+#        {
+#            node := ref Node(local.contacts.randomidinbucket(i), "fill test", 0);
+#            local.contacts.addcontact(node);
+#        }
+#    }
+#    if (verbose)
+#    {
+#        sys->print("OK! Total count of contacts: %d\n", countnodes(0));
+#        sys->print("Number of buckets: %d\n\n", len local.contacts.buckets);
+#    }
+#}
+#
+## Rmsg/Tmsg tests
+#
+#randomunpacktest()
+#{
+#    sys->print("Trying to unpack random buffer\n");
+#    l := random->randomint(random->NotQuiteRandom);
+#    l = l % (MAXRPC * 2);
+#    if (l < 0)
+#        l = -l;
+#    l += 5;
+#    data := random->randombuf(random->NotQuiteRandom, l);
+#    data[0] = byte l >> 0;
+#    data[1] = byte l >> 8;
+#    data[2] = byte l >> 16;
+#    data[3] = byte l >> 24;
+#
+#    data[4] = byte 100;
+#    {
+#        sys->print("Parsing Tmsg\n");
+#        (nil, msg) := Tmsg.unpack(data);
+#        sys->print("Aw, success! Message read:\n%s\n", msg.text());
+#    }
+#    exception e
+#    {
+#        "fail:*" =>
+#            sys->print("Exception catched: %s\n", e);
+#    }
+#
+#    data[4] = byte 101;
+#    {
+#        sys->print("Parsing Rmsg\n");
+#        (nil, msg) := Rmsg.unpack(data);
+#        sys->print("Aw, success! Message read:\n%s\n", msg.text());
+#    }
+#    exception e
+#    {
+#        "fail:*" =>
+#            sys->print("Exception catched: %s\n", e);
+#    }
+#
+#    sys->print("OK! Random unpack test passed!\n");
+#    sys->print("\n");
+#}
+#
+#randompacktmsgtest()
+#{
+#    sys->print("Trying to pack and unpack random Tmsg\n");
+#
+#    msg := randomtmsg();
+#    buf := msg.pack();
+#    buflen := len buf;
+#    (readlen, newmsg) := Tmsg.unpack(buf);
+#    newbuf := newmsg.pack();
+#    if (readlen != buflen || !arreq(buf, newbuf))
+#    {
+#        sys->print("Something went wrong!\n");
+#        sys->print("Buffer is %d bytes, processed %d\n", buflen, readlen);
+#        sys->print("Message: %s\n", msg.text());
+#        sys->print("Unpacked message: %s\n", newmsg.text());
+#        raise "test failed:randompacktmsg";
+#    }
+#
+#    sys->print("OK! Random pack test passed!");
+#    sys->print("\n");
+#}
+#randompackrmsgtest()
+#{
+#    sys->print("Trying to pack and unpack random Rmsg\n");
+#
+#    msg := randomrmsg();
+#    buf := msg.pack();
+#    buflen := len buf;
+#    (readlen, newmsg) := Rmsg.unpack(buf);
+#    newbuf := newmsg.pack();
+#    if (readlen != buflen || !arreq(buf, newbuf))
+#    {
+#        sys->print("Something went wrong!\n");
+#        sys->print("Buffer is %d bytes, processed %d\n", buflen, readlen);
+#        sys->print("Message: %s\n", msg.text());
+#        sys->print("Unpacked message: %s\n", newmsg.text());
+#        raise "test failed:randompackrmsg";
+#    }
+#
+#    sys->print("OK! Random pack test passed!");
+#    sys->print("\n");
+#}
+#
+#starttest()
+#{
+#    local = initlocal("", 0);
+#    key1 := addrandom(1);
+#    key2 := addrandom(1);
+#    addnode(key1, 1);
+#    addnode(key2, 1);
+#    print();
+#    clean(0);
+#    keys := addrandoms(100, 1);
+#    countnodes(1);
+#    for (i := 0; i < len keys; i++)
+#        removekey(keys[i], 0);
+#    if (countnodes(1) != 0)
+#    {
+#        sys->print("Deletion test failed!\n");
+#        raise "test fail:deletion";
+#    }
+#    for (i = 0; i < 100000; i++)
+#    {
+#        randompacktmsgtest();
+#        randompackrmsgtest();
+#        randomunpacktest();
+#    }
+#}
 
 parsenode(args: list of string): ref Node
 {
@@ -463,19 +463,31 @@ parsenode(args: list of string): ref Node
     args = tl args;
     if (args == nil)
         raise "fail:bad args";
-
-    addr := hd args;
+    prvaddr := hd args;
+    
     args = tl args;
     if (args == nil)
         raise "fail:bad args";
+    pubaddr := hd args;
 
-    rtt := int hd args;
-    return ref Node(*key, addr, rtt);
+    args = tl args;
+    if (args == nil)
+        raise "fail:bad args";
+    srvaddr := hd args;
+    
+    args = tl args;
+    if (args == nil)
+        raise "fail:bad args";
+    srvid := Key.parse(hd args);
+    if (srvid == nil)
+        raise "fail:bad key";
+    
+    return ref Node(*key, prvaddr, pubaddr, srvaddr, *srvid);
 }
-interactivetest(addr: string)
+interactivetest(addr: string, bootstrap: ref Node)
 {
     servers := array [1] of ref Local;
-    servers[0] = initlocal(addr, 1);
+    servers[0] = initlocal(addr, 1, bootstrap);
     local = servers[0];
 
     stdin := sys->fildes(0);
@@ -638,25 +650,25 @@ interactivetest(addr: string)
                     print();
                 "clear" =>
                     clean(1);
-                "closesttest" =>
-                    args = tl args;
-                    if (args == nil)
-                        raise "fail:bad args";
-                    closesttest(int hd args, 1);
-                "randomidinrangetest" =>
-                    args = tl args;
-                    if (args == nil)
-                        raise "fail:bad args";
-                    randomidinrangetest(int hd args, 1);
-                "sequentialtest" =>
-                    sequentialtest(1);
-                "filltest" =>
-                    filltest(1);
-                "randomunpackmsgtest" =>
-                    randomunpacktest();
-                "packunpackmsgtest" =>
-                    randompackrmsgtest();
-                    randompacktmsgtest();
+                #"closesttest" =>
+                #    args = tl args;
+                #    if (args == nil)
+                #        raise "fail:bad args";
+                #    closesttest(int hd args, 1);
+                #"randomidinrangetest" =>
+                #    args = tl args;
+                #    if (args == nil)
+                #        raise "fail:bad args";
+                #    randomidinrangetest(int hd args, 1);
+                #"sequentialtest" =>
+                #    sequentialtest(1);
+                #"filltest" =>
+                #    filltest(1);
+                #"randomunpackmsgtest" =>
+                #    randomunpacktest();
+                #"packunpackmsgtest" =>
+                #    randompackrmsgtest();
+                #    randompacktmsgtest();
                 "log" =>
                     args = tl args;
                     if (args == nil)
@@ -699,15 +711,20 @@ init(nil: ref Draw->Context, args: list of string)
 
     args = tl args;
     if (args == nil)
-        starttest();
+        exit;
 
     addr := hd args;
     args = tl args;
 
+    baddr := hd args;
+    args = tl args;
+    bid := hd args;
+    args = tl args;
+
     if (args != nil && hd args == "-i")
-        interactivetest(addr);
-    else
-        starttest();
+        interactivetest(addr, ref Node(*Key.parse(bid), baddr, baddr, baddr, *Key.parse(bid)));
+    #else
+    #    starttest();
 
     sys->print("cleaning up\n");
     local.destroy();

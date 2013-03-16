@@ -6,7 +6,7 @@ include "crc.m";
     crc: Crc;
 include "ip.m";
     ip: IP;
-    Udphdr, Udphdrlen, IPaddr: import ip;
+    Udphdr, Udp4hdrlen, IPaddr: import ip;
 include "keyring.m";
     keyring: Keyring;
 include "encoding.m";
@@ -115,6 +115,22 @@ init()
 }
 
 # misc helper functions
+
+#
+# [[/netdir/]proto!]addr!port
+#
+dialparse(addr: string): (IPaddr, int)
+{
+    (nil, parts) := sys->tokenize(addr, "!");
+    if (parts == nil || len parts != 3)
+        raise "fail:dialparse:bad address";
+    parts = tl parts; # skip proto
+    (err, ipaddr) := IPaddr.parse(hd parts);
+    if (err < 0)
+        raise "fail:dialparse:bad ip part";
+    parts = tl parts;
+    return (ipaddr, int hd parts);
+}
 
 abs(a: int): int
 {
@@ -1004,28 +1020,37 @@ killpid(pid: int)
 Local.process(l: self ref Local)
 {
     l.processpid = sys->pctl(0, nil);
+    # turn on headers mode
+    sys->fprint(l.conn.cfd, "headers4");
 
     # reading incoming packets
-    l.conn.dfd = sys->open(l.conn.dir + "/data", Sys->OREAD);
+    l.conn.dfd = sys->open(l.conn.dir + "/data", Sys->ORDWR);
     while (1)
     {
-        buffer := array [MAXRPC] of byte;
+        buffer := array [MAXRPC + Udp4hdrlen] of byte;
         bytesread := sys->read(l.conn.dfd, buffer, len buffer);
         l.logevent("process", "New incoming message");
 
+        hdr := Udphdr.unpack(buffer[:Udp4hdrlen], Udp4hdrlen);
+        if (hdr == nil)
+            raise "fail:Local.process:headers parsing error";
+        raddr := "udp!" + hdr.raddr.text() + "!" + string hdr.rport;
+        l.logevent("process", "remote addr: " + raddr);
+        buffer = buffer[Udp4hdrlen:];
+
         if (bytesread <= 0)
             raise sys->sprint("fail:Local.process:read error:%r");
-        if (bytesread < H)
+        if (bytesread < H + Udp4hdrlen)
             continue;
 
         msgtype := int buffer[4];
         if (msgtype & 1)
             spawn l.processrmsg(buffer);
         else
-            spawn l.processtmsg(buffer);
+            spawn l.processtmsg(buffer, raddr);
     }
 }
-Local.processtmsg(l: self ref Local, buf: array of byte)
+Local.processtmsg(l: self ref Local, buf: array of byte, raddr: string)
 {
     {
         (nil, msg) := Tmsg.unpack(buf);
@@ -1076,7 +1101,7 @@ Local.processtmsg(l: self ref Local, buf: array of byte)
                 answer = ref Rmsg.Invitation(m.uid, l.node.id, sender.id, RSuccess);
             Observe =>
                 shouldadd = 0;
-                #TRAVERSE TODO: Message vivisection goes here
+                answer = ref Rmsg.Observe(m.uid, l.node.id, sender.id, raddr);
         }
 
         # add every incoming node except for observed
@@ -1244,6 +1269,21 @@ Local.storeproc(l: self ref Local)
         }
     }
 }
+Local.sendmsg(l: self ref Local, addr: string, data: array of byte)
+{
+    # TODO: catch errors
+    buffer := array [len data + Udp4hdrlen] of byte;
+    hdr := Udphdr.new();
+    (laddr, lport) := dialparse(l.node.prvaddr);
+    (raddr, rport) := dialparse(addr);
+    hdr.lport = lport;
+    hdr.laddr = laddr;
+    hdr.rport = rport;
+    hdr.raddr = raddr;
+    hdr.pack(buffer, Udp4hdrlen);
+    buffer[Udp4hdrlen:] = data[:];
+    sys->write(l.conn.dfd, buffer, len buffer);
+}
 Local.sendtmsg(l: self ref Local, n: ref Node, msg: ref Tmsg): chan of ref Rmsg
 {
     # TRAVERSE TODO: do it somewhere else in reaction to message wait timeout?
@@ -1263,19 +1303,10 @@ Local.sendtmsg(l: self ref Local, n: ref Node, msg: ref Tmsg): chan of ref Rmsg
     l.logevent("sendtmsg", "Dump: " + msg.text());
     ch := chan of ref Rmsg;
 
-    buf := msg.pack();
-    (err, c) := sys->dial(n.pubaddr, "");
-    if (err != 0)
-        l.logevent("sendtmsg", sys->sprint("Send error: %r"));
-        #raise sys->sprint("fail:sendtmsg:send error:%r");
-
     l.callbacksch <-= (QAddCallback, msg.uid.text(), ch);
-    sys->write(c.dfd, buf, len buf);
+    l.sendmsg(n.pubaddr, msg.pack());
     if (n.pubaddr != n.prvaddr)
-    {
-            (err, c) = sys->dial(n.prvaddr, "");
-            sys->write(c.dfd, buf, len buf);
-    }
+        l.sendmsg(n.pubaddr, msg.pack());
     return ch;
 }
 Local.sendrmsg(l: self ref Local, addr: string, msg: ref Rmsg)
@@ -1283,12 +1314,7 @@ Local.sendrmsg(l: self ref Local, addr: string, msg: ref Rmsg)
     l.logevent("sendrmsg", "Sending message to " + addr);
     l.logevent("sendrmsg", "Dump: " + msg.text());
 
-    buf := msg.pack();
-    (err, c) := sys->dial(addr, "");
-    if (err != 0)
-        l.logevent("sendrsmsg", sys->sprint("Send error: %r"));
-        #raise sys->sprint("fail:senrdmsg:send error:%r");
-    sys->write(c.dfd, buf, len buf);
+    l.sendmsg(addr, msg.pack());
 }
 Local.destroy(l: self ref Local)
 {

@@ -216,7 +216,9 @@ Dht: module
         findkclosest: fn(nil: self ref Local, id: Key): array of ref Node;
         # process some message
         processrmsg: fn(nil: self ref Local, buf: array of byte);
-        processtmsg: fn(nil: self ref Local, buf: array of byte);
+        processtmsg: fn(nil: self ref Local, buf: array of byte, raddr: string);
+        # actually sends a message to the specified address
+        sendmsg: fn(nil: self ref Local, addr: string, data: array of byte);
         # send the message and setup callback with given channel
         sendtmsg: fn(nil: self ref Local, n: ref Node, msg: ref Tmsg): chan of ref Rmsg;
         # same as above, but without callbacks
