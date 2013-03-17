@@ -184,6 +184,7 @@ Dht: module
 
     Local: adt {
         node: Node;
+        localaddr: (IPaddr, int);
         contacts: cyclic ref Contacts;
         # store consists of Key, data and last access time
         store: ref HashTable[list of ref StoreItem];

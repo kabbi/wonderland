@@ -1041,7 +1041,10 @@ Local.process(l: self ref Local)
         if (bytesread <= 0)
             raise sys->sprint("fail:Local.process:read error:%r");
         if (bytesread < H + Udp4hdrlen)
+        {
+            l.logevent("process", "Incoming packet too short, ignoring");
             continue;
+        }
 
         msgtype := int buffer[4];
         if (msgtype & 1)
@@ -1101,6 +1104,7 @@ Local.processtmsg(l: self ref Local, buf: array of byte, raddr: string)
                 answer = ref Rmsg.Invitation(m.uid, l.node.id, sender.id, RSuccess);
             Observe =>
                 shouldadd = 0;
+                sender.pubaddr = raddr;
                 answer = ref Rmsg.Observe(m.uid, l.node.id, sender.id, raddr);
         }
 
@@ -1114,11 +1118,11 @@ Local.processtmsg(l: self ref Local, buf: array of byte, raddr: string)
                 l.sendrmsg(sender.prvaddr, answer);
         }
     }
-#    exception e
-#    {
-#        "fail:*" =>
-#            # nop
-#    }
+    exception e
+    {
+        "fail:*" =>
+            l.logevent("precessrmsg", "Exception cought while processing Tmsg: " + e);
+    }
 }
 Local.processrmsg(l: self ref Local, buf: array of byte)
 {
@@ -1138,11 +1142,11 @@ Local.processrmsg(l: self ref Local, buf: array of byte)
         if (ch != nil)
             ch <-= msg;
     }
-#    exception e
-#    {
-#        "fail:*" =>
-#            # nop
-#    }
+    exception e
+    {
+        "fail:*" =>
+            l.logevent("precessrmsg", "Exception cought while processing Rmsg: " + e);
+    }
 }
 Local.timer(l: self ref Local)
 {
@@ -1273,16 +1277,16 @@ Local.sendmsg(l: self ref Local, addr: string, data: array of byte)
 {
     # TODO: catch errors
     buffer := array [len data + Udp4hdrlen] of byte;
+
     hdr := Udphdr.new();
-    (laddr, lport) := dialparse(l.node.prvaddr);
-    (raddr, rport) := dialparse(addr);
-    hdr.lport = lport;
-    hdr.laddr = laddr;
-    hdr.rport = rport;
-    hdr.raddr = raddr;
+    (hdr.laddr, hdr.lport) = l.localaddr;
+    (hdr.raddr, hdr.rport) = dialparse(addr);
     hdr.pack(buffer, Udp4hdrlen);
+
     buffer[Udp4hdrlen:] = data[:];
-    sys->write(l.conn.dfd, buffer, len buffer);
+    byteswritten := sys->write(l.conn.dfd, buffer, len buffer);
+    if (byteswritten != len buffer)
+        l.logevent("sendmsg", sys->sprint("Error while sending data: %r"));
 }
 Local.sendtmsg(l: self ref Local, n: ref Node, msg: ref Tmsg): chan of ref Rmsg
 {
@@ -1498,7 +1502,7 @@ Local.dhtping(l: self ref Local, id: Key): int
     sendtime := sys->millisec();
 
     killerch := chan of int;
-    spawn timer(killerch, 1000);
+    spawn timer(killerch, 2000);
 
     result := -1;
     alt {
@@ -1531,7 +1535,7 @@ Local.processrandezvousquery(l: self ref Local, m: ref Tmsg.AskRandezvous, askin
     ch := l.sendtmsg(askednode, invitation);
 
     killerch := chan of int;
-    spawn timer(killerch, 1000);
+    spawn timer(killerch, 2000);
 
     result := RFail;
     alt {
@@ -1567,7 +1571,7 @@ Local.askrandezvous(l: self ref Local, nodeaddr, srvaddr: string, nodeid, srvid:
     ch := l.sendtmsg(server, askrandezvous);
 
     killerch := chan of int;
-    spawn timer(killerch, 1000);
+    spawn timer(killerch, 2000);
 
     result := RFail;
     alt {
@@ -1601,7 +1605,7 @@ replacefirstnode(c: ref Contacts, toadd: Node, pingnode: Node, ch: chan of ref R
 {
     answer: ref Rmsg;
     killerch := chan of int;
-    spawn timer(killerch, 1000);
+    spawn timer(killerch, 2000);
     alt {
         answer = <-ch =>
             pick m := answer {
@@ -1683,7 +1687,7 @@ store(l: ref Local, where: ref Node, key: Key, value: ref StoreItem)
     ch := l.sendtmsg(where, msg);
     answer: ref Rmsg;
     killerch := chan of int;
-    spawn timer(killerch, 1000);
+    spawn timer(killerch, 2000);
     alt {
         answer = <-ch =>
             pick m := answer {
@@ -1714,6 +1718,7 @@ store(l: ref Local, where: ref Node, key: Key, value: ref StoreItem)
 start(localaddr: string, bootstrap: array of ref Node, id: Key, logfd: ref Sys->FD): ref Local
 {
     node := Node(id, localaddr, localaddr, bootstrap[0].pubaddr, bootstrap[0].id);
+    (localip, localport) := dialparse(localaddr);
     contacts := ref Contacts(array [1] of ref Bucket, nil);
     # construct the first bucket
     contacts.buckets[0] = ref Bucket(array [0] of Node,
@@ -1722,7 +1727,9 @@ start(localaddr: string, bootstrap: array of ref Node, id: Key, logfd: ref Sys->
         daytime->now());
 
     # try to announce connection
-    (err, c) := sys->announce(localaddr);
+    # TODO: fix that! address should be parsed carefully
+    # TODO: correct the first part of dial command, should be something random
+    (err, c) := sys->announce("udp!*!" + string localport);
     if (err != 0)
         return nil;
 
@@ -1733,7 +1740,7 @@ start(localaddr: string, bootstrap: array of ref Node, id: Key, logfd: ref Sys->
     callbacksch := chan of (int, string, chan of ref Rmsg);
     contactsch := chan of (int, ref Node);
     storech := chan of (string, ref StoreItem, ref StoreItem, ref HashTable[list of ref StoreItem]);
-    server := ref Local(node, contacts, store, localstore, callbacksch,
+    server := ref Local(node, (localip, localport), contacts, store, localstore, callbacksch,
         hashtable->new(CALLBACKSIZE, ch), storech, contactsch, 0, 0, 0, 0, 0, logfd, c);
 
     server.contacts.local = server;
@@ -1748,7 +1755,7 @@ start(localaddr: string, bootstrap: array of ref Node, id: Key, logfd: ref Sys->
     pubaddr: string;
     rchan := server.sendtmsg(bootstrap[0], msg);
     killerch := chan of int;
-    spawn timer(killerch, 1000);
+    spawn timer(killerch, 3000);
     alt {
         answer := <-rchan =>
             pick m := answer {

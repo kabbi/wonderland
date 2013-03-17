@@ -13,6 +13,9 @@ include "bigkey.m";
 include "hashtable.m";
     hashtable: Hashtable;
     HashTable: import hashtable;
+include "ip.m";
+    ip: IP;
+    Udphdr, Udp4hdrlen, IPaddr: import ip;
 include "dht.m";
     dht: Dht;
     Node,Bucket,Contacts,Local,K,BB,B,
@@ -62,7 +65,7 @@ initlocal(addr: string, verbose: int, bootstrap: ref Node): ref Local
 
     key := Key.generate();
     l := dht->start(addr, array [] of {bootstrap},
-                    key, nil);
+                    key, sys->open("/dev/cons", Sys->OWRITE));
     if (l == nil)
     {
         sys->print("failed to start server!\n%r\n");
@@ -494,9 +497,9 @@ interactivetest(addr: string, bootstrap: ref Node)
     print();
     while (1)
     {
-        buf := array [100] of byte;
+        buf := array [1000] of byte;
         sys->print("\nDht> ");
-        readcnt := sys->read(stdin, buf, 100);
+        readcnt := sys->read(stdin, buf, len buf);
         if (readcnt <= 0)
             raise sys->sprint("fail:stdin read error:%r");
         line := string buf[:readcnt - 1]; # also strip \n
