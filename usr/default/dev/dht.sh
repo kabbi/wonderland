@@ -3,4 +3,3 @@ fn c {
 	cp /dis/lib/dht.sbl /appl/lib/
 }
 fn k {kill Dht}
-wm/sh
