@@ -1,0 +1,9 @@
+fn create-dev-shell {
+	wm/sh -c 'run dev/'$1 -i&
+}
+menu Wonderland Cheshire {create-dev-shell cheshire.sh}
+menu Wonderland Dht {create-dev-shell dht.sh}
+menu Wonderland Dhttest {create-dev-shell dhttest.sh}
+menu Wonderland Dhtfs {create-dev-shell dhtfs.sh}
+wmrun wm/task
+wmrun wm/man
