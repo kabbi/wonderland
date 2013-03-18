@@ -223,7 +223,7 @@ Dht: module
         # send the message and setup callback with given channel
         sendtmsg: fn(nil: self ref Local, n: ref Node, msg: ref Tmsg): chan of ref Rmsg;
         # same as above, but without callbacks
-        sendrmsg: fn(nil: self ref Local, addr: string, msg: ref Rmsg);
+        sendrmsg: fn(nil: self ref Local, prvaddr: string, pubaddr: string, msg: ref Rmsg);
         # log some data
         logevent: fn(nil: self ref Local, source: string, msg: string);
         # fire the event with some interval
