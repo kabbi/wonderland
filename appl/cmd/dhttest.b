@@ -653,6 +653,7 @@ interactivetest(addr: string, bootstrap: ref Node)
                 "chaddr" =>
                     if (tl args == nil)
                         raise "fail:bad args";
+                    args = tl args;
                     addr := hd args;
                     local.node.prvaddr = addr;
                     local.node.pubaddr = addr;

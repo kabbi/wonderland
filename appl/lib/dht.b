@@ -1079,7 +1079,7 @@ Local.processtmsg(l: self ref Local, buf: array of byte, raddr: string)
                 {
                     replacement := ref StoreItem(m.value.data, m.value.lastupdate, m.value.publishtime);
                     l.storech <-= (m.key.text(), m.value, replacement, l.store);
-                    result := SSuccess;
+                    result = SSuccess;
                 }
                 answer = ref Rmsg.Store(m.uid, l.node.id, sender.id, result);
             FindNode =>
@@ -1103,9 +1103,7 @@ Local.processtmsg(l: self ref Local, buf: array of byte, raddr: string)
                 spawn l.processrandezvousquery(m, sender);
             Invitation => 
                 traverser := ref Rmsg.Ping(m.uid, l.node.id, m.oppid);
-                l.sendrmsg(m.opppubaddr, traverser);
-                if (m.opppubaddr != m.oppprvaddr)
-                    l.sendrmsg(m.oppprvaddr, traverser);
+                l.sendrmsg(m.oppprvaddr, m.opppubaddr, traverser);
                 answer = ref Rmsg.Invitation(m.uid, l.node.id, sender.id, RSuccess);
             Observe =>
                 shouldadd = 0;
@@ -1117,11 +1115,7 @@ Local.processtmsg(l: self ref Local, buf: array of byte, raddr: string)
         if (shouldadd)
             l.contactsch <-= (QAddContact, sender);
         if (answer != nil)
-        {
-            l.sendrmsg(sender.pubaddr, answer);
-            if (sender.pubaddr != sender.prvaddr)
-                l.sendrmsg(sender.prvaddr, answer);
-        }
+            l.sendrmsg(sender.prvaddr, sender.pubaddr, answer);
     }
     exception e
     {
@@ -1295,6 +1289,14 @@ Local.sendmsg(l: self ref Local, addr: string, data: array of byte)
 }
 Local.sendtmsg(l: self ref Local, n: ref Node, msg: ref Tmsg): chan of ref Rmsg
 {
+    if (msg.targetid.eq(l.node.id))
+    {
+        # do not send it over the network!
+        spawn l.processtmsg(msg.pack(), l.node.prvaddr);
+        ch := chan of ref Rmsg;
+        l.callbacksch <-= (QAddCallback, msg.uid.text(), ch);
+        return ch;
+    }
     # TRAVERSE TODO: do it somewhere else in reaction to message wait timeout?
     if (n.pubaddr != n.prvaddr && l.contacts.getnode(n.id) == nil)  
     # TRAVERSE TODO Quite bad, it could still be unreachable even if in contacts
@@ -1312,18 +1314,28 @@ Local.sendtmsg(l: self ref Local, n: ref Node, msg: ref Tmsg): chan of ref Rmsg
     l.logevent("sendtmsg", "Dump: " + msg.text());
     ch := chan of ref Rmsg;
 
+    buf := msg.pack();
     l.callbacksch <-= (QAddCallback, msg.uid.text(), ch);
-    l.sendmsg(n.pubaddr, msg.pack());
+    l.sendmsg(n.pubaddr, buf);
     if (n.pubaddr != n.prvaddr)
-        l.sendmsg(n.prvaddr, msg.pack());
+        l.sendmsg(n.prvaddr, buf);
     return ch;
 }
-Local.sendrmsg(l: self ref Local, addr: string, msg: ref Rmsg)
+Local.sendrmsg(l: self ref Local, prvaddr: string, pubaddr: string, msg: ref Rmsg)
 {
-    l.logevent("sendrmsg", "Sending message to " + addr);
+    if (msg.targetid.eq(l.node.id))
+    {
+        # do not send it over the network!
+        spawn l.processrmsg(msg.pack());
+        return;
+    }
+    l.logevent("sendrmsg", "Sending message to " + pubaddr + "/" + prvaddr);
     l.logevent("sendrmsg", "Dump: " + msg.text());
 
-    l.sendmsg(addr, msg.pack());
+    buf := msg.pack();
+    l.sendmsg(pubaddr, buf);
+    if (pubaddr != prvaddr)
+       l.sendmsg(prvaddr, buf);
 }
 Local.destroy(l: self ref Local)
 {
@@ -1564,9 +1576,7 @@ Local.processrandezvousquery(l: self ref Local, m: ref Tmsg.AskRandezvous, askin
     }
     l.callbacksch <-= (QRemoveCallback, invitation.uid.text(), nil);
     answer := ref Rmsg.AskRandezvous(m.uid, l.node.id, askingnode.id, result);
-    l.sendrmsg(askingnode.pubaddr, answer);
-    if (askingnode.pubaddr != askingnode.prvaddr)
-       l.sendrmsg(askingnode.prvaddr, answer);
+    l.sendrmsg(askingnode.prvaddr, askingnode.pubaddr, answer);
 }
 Local.askrandezvous(l: self ref Local, nodeaddr, srvaddr: string, nodeid, srvid: Key): int
 {
