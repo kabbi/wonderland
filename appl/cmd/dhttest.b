@@ -18,7 +18,7 @@ include "ip.m";
     Udphdr, Udp4hdrlen, IPaddr: import ip;
 include "dht.m";
     dht: Dht;
-    Node,Bucket,Contacts,Local,K,BB,B,
+    StoreItem,Node,Bucket,Contacts,Local,K,BB,B,
     MAXRPC,Rmsg,Tmsg: import dht;
 
 DEFADDR: con "udp!127.0.0.1!10000";
@@ -91,10 +91,32 @@ clean(verbose: int): int
     return 0;
 }
 
+printstore(store: ref HashTable[list of ref StoreItem])
+{
+    if (store == nil || len store.all() == 0)
+    {
+        sys->print("\t<empty>\n");
+        return;
+    }
+    for (rest := store.all(); rest != nil; rest = tl rest)
+    {
+        for (tail := (hd rest).val; tail != nil; tail = tl tail)
+        {
+            item := hd tail;
+            sys->print("\t%s: %s, %d, %d\n", (hd rest).key, string item.data,
+                item.lastupdate, item.publishtime);
+        }
+    }
+}
+
 print()
 {
     sys->print("%s\n", (ref local.node).text());
     sys->print("%s\n", local.contacts.text(0));
+    sys->print("Local storage:\n");
+    printstore(local.store);
+    sys->print("Our own store:\n");
+    printstore(local.ourstore);
 }
 
 #addnode(key: Key, verbose: int)
@@ -719,6 +741,7 @@ init(nil: ref Draw->Context, args: list of string)
     if (bigkey == nil)
         badmodule(Bigkey->PATH);
     bigkey->init();
+    hashtable = load Hashtable Hashtable->PATH;
 
     args = tl args;
     if (args == nil)

@@ -1163,6 +1163,7 @@ Local.timer(l: self ref Local)
             bucket := l.contacts.buckets[i];
             if (curtime - bucket.lastaccess > REFRESH_TIME)
             {
+                l.logevent("timer", "Refreshing bucket " + string i);
                 randomkey := l.contacts.randomidinbucket(i);
                 l.dhtfindnode(randomkey, nil);
                 bucket.lastaccess = curtime;
@@ -1181,12 +1182,16 @@ Local.timer(l: self ref Local)
                 # replicate stage
                 if (curtime - item.lastupdate > REPLICATE_TIME)
                 {
+                    l.logevent("timer", "Replicating item with key: " + key.text());
                     item.lastupdate = curtime;
                     storehelper(l, key, item);
                 }
                 # expire stage
                 if (curtime - item.publishtime > EXPIRE_TIME)
+                {
+                    l.logevent("timer", "Item with key " + key.text() + " expired, removing");
                     l.storech <-= ((hd rest).key, item, nil, l.store);
+                }
             }
         }
 
@@ -1201,6 +1206,7 @@ Local.timer(l: self ref Local)
                 item := hd tail;
                 if (curtime - item.publishtime > REPUBLISH_TIME)
                 {
+                    l.logevent("timer", "Republishing item with key: " + key.text());
                     item.publishtime = daytime->now();
                     item.lastupdate = daytime->now();
                     storehelper(l, key, item);       
