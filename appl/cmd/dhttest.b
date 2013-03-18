@@ -93,6 +93,7 @@ clean(verbose: int): int
 
 print()
 {
+    sys->print("%s\n", (ref local.node).text());
     sys->print("%s\n", local.contacts.text(0));
 }
 
@@ -649,6 +650,12 @@ interactivetest(addr: string, bootstrap: ref Node)
                         sys->print("Ping success!\nGot answer in %d ms\n", rtt);
                     else
                         sys->print("No answer!\n");
+                "chaddr" =>
+                    if (tl args == nil)
+                        raise "fail:bad args";
+                    addr := hd args;
+                    local.node.prvaddr = addr;
+                    local.node.pubaddr = addr;
                 "print" =>
                     print();
                 "clear" =>

@@ -1083,13 +1083,18 @@ Local.processtmsg(l: self ref Local, buf: array of byte, raddr: string)
                 }
                 answer = ref Rmsg.Store(m.uid, l.node.id, sender.id, result);
             FindNode =>
+                if (m.key.eq(l.node.id))
+                {
+                    l.logevent("processtmsg", "Ignoring FindValue on self id");
+                    break;
+                }
                 nodes := l.contacts.findclosenodes(m.key);
                 answer = ref Rmsg.FindNode(m.uid, l.node.id, sender.id, nodes);
             FindValue =>
                 nodes := array [0] of Node;
                 value: list of ref StoreItem;
                 items := l.store.find(m.key.text());
-                if (items == nil || len items == 0)
+                if ((items == nil || len items == 0) && !m.key.eq(l.node.id))
                     nodes = l.contacts.findclosenodes(m.key);
                 else
                     value = items;
@@ -1310,7 +1315,7 @@ Local.sendtmsg(l: self ref Local, n: ref Node, msg: ref Tmsg): chan of ref Rmsg
     l.callbacksch <-= (QAddCallback, msg.uid.text(), ch);
     l.sendmsg(n.pubaddr, msg.pack());
     if (n.pubaddr != n.prvaddr)
-        l.sendmsg(n.pubaddr, msg.pack());
+        l.sendmsg(n.prvaddr, msg.pack());
     return ch;
 }
 Local.sendrmsg(l: self ref Local, addr: string, msg: ref Rmsg)
