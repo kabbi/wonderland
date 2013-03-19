@@ -103,8 +103,9 @@ printstore(store: ref HashTable[list of ref StoreItem])
         for (tail := (hd rest).val; tail != nil; tail = tl tail)
         {
             item := hd tail;
-            sys->print("\t%s: %s, %d, %d\n", (hd rest).key, string item.data,
-                item.lastupdate, item.publishtime);
+            sys->print("\t%s: %s, %s, %s\n", (hd rest).key, string item.data,
+                daytime->text(daytime->local(item.lastupdate)),
+                daytime->text(daytime->local(item.publishtime)));
         }
     }
 }
@@ -742,6 +743,7 @@ init(nil: ref Draw->Context, args: list of string)
         badmodule(Bigkey->PATH);
     bigkey->init();
     hashtable = load Hashtable Hashtable->PATH;
+    daytime = load Daytime Daytime->PATH;
 
     args = tl args;
     if (args == nil)
