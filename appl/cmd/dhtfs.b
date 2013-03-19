@@ -8,21 +8,21 @@ include "styx.m";
 	Rmsg, Tmsg: import styx;
 include "styxservers.m";
 	styxservers: Styxservers;
-	Ebadfid, Enotfound, Eopen, Einuse: import Styxservers;
-	Styxserver, readbytes, Navigator, Fid: import styxservers;
+	Ebadfid, Enotfound, Eopen, Einuse, Eperm: import Styxservers;
+	Styxserver, readbytes, readstr, Navigator, Fid: import styxservers;
 	nametree: Nametree;
 	Tree: import nametree;
 include "daytime.m";
-    daytime: Daytime;
+	daytime: Daytime;
 include "bigkey.m";
-    bigkey: Bigkey;
-    Key: import bigkey;
+	bigkey: Bigkey;
+	Key: import bigkey;
 include "hashtable.m";
-    hashtable: Hashtable;
-    HashTable: import hashtable;
+	hashtable: Hashtable;
+	HashTable: import hashtable;
 include "dht.m";
-    dht: Dht;
-    Node, Local, StoreItem: import dht;
+	dht: Dht;
+	Node, Local, StoreItem: import dht;
 
 Dhtfs: module {
 	init: fn(nil: ref Draw->Context, argv: list of string);
@@ -70,14 +70,14 @@ init(nil: ref Draw->Context, args: list of string)
 	if (nametree == nil)
 		badmodule(Nametree->PATH);
 	nametree->init();
-    bigkey = load Bigkey Bigkey->PATH;
-    if (bigkey == nil)
-        badmodule(Bigkey->PATH);
-    bigkey->init();
-    dht = load Dht Dht->PATH;
-    if (dht == nil)
-        badmodule(Dht->PATH);
-    dht->init();
+	bigkey = load Bigkey Bigkey->PATH;
+	if (bigkey == nil)
+		badmodule(Bigkey->PATH);
+	bigkey->init();
+	dht = load Dht Dht->PATH;
+	if (dht == nil)
+		badmodule(Dht->PATH);
+	dht->init();
 
 	# setup a pipe
 	fds := array [2] of ref Sys->FD;
@@ -88,8 +88,8 @@ init(nil: ref Draw->Context, args: list of string)
 	}
 
 	# get some usefull things
-    user = getcuruser();
-    stderr = sys->fildes(2);
+	user = getcuruser();
+	stderr = sys->fildes(2);
 
 	# parse cmdline args
 	arg := load Arg Arg->PATH;
@@ -128,14 +128,14 @@ init(nil: ref Draw->Context, args: list of string)
 	# TODO: fix permissions
 	# create our file tree
 	tree.create(Qroot, dir(".", Sys->DMDIR | 8r555, Qroot));
-	tree.create(Qroot, dir("findnode",		8r555, Qfindnode));
-	tree.create(Qroot, dir("findvalue",		8r555, Qfindvalue));
-	tree.create(Qroot, dir("store",			8r555, Qstore));
-	tree.create(Qroot, dir("ping", 			8r555, Qping));
-	tree.create(Qroot, dir("stats",			8r555, Qstats));
-	tree.create(Qroot, dir("status",		8r555, Qstatus));
-	tree.create(Qroot, dir("localstore",	8r555, Qlocalstore));
-	tree.create(Qroot, dir("contacts",		8r555, Qcontacts));
+	tree.create(Qroot, dir("findnode",		8r764, Qfindnode));
+	tree.create(Qroot, dir("findvalue",		8r764, Qfindvalue));
+	tree.create(Qroot, dir("store",			8r764, Qstore));
+	tree.create(Qroot, dir("ping", 			8r764, Qping));
+	tree.create(Qroot, dir("stats",			8r764, Qstats));
+	tree.create(Qroot, dir("status",		8r764, Qstatus));
+	tree.create(Qroot, dir("localstore",	8r764, Qlocalstore));
+	tree.create(Qroot, dir("contacts",		8r764, Qcontacts));
 
 	# start server message processing
 	spawn serverloop(tchan, srv);
@@ -212,6 +212,93 @@ serverloop(tchan: chan of ref Styx->Tmsg, srv: ref Styxserver)
 handlemsg(gm: ref Styx->Tmsg, srv: ref Styxserver, nil: ref Tree): string
 {
 	pick m := gm {
+	Read =>
+		(fid, err) := srv.canread(m);
+		if(fid == nil)
+			return err;
+
+		if((fid.qtype & Sys->QTDIR) != 0)
+		{
+			# dir reads are handled by server
+			srv.read(m);
+			return nil;
+		}
+
+		if (len fid.data != 0)
+		{
+			srv.reply(readbytes(m, fid.data));
+			return nil;
+		}
+
+		answer := "you haven't asked a question. 42";
+		case fid.path {
+			Qstatus =>
+				answer = "dht status";
+			Qstats =>
+				answer = "dht statistics";
+			Qlocalstore =>
+				answer = "dht local (node) storage";
+			Qcontacts =>
+				answer = (ref local.node).text() + "\n";
+			* =>
+				# do nothing
+		}
+
+		fid.data = array of byte answer;
+		srv.reply(readstr(m, answer));
+	Write =>
+		(fid, err) := srv.canwrite(m);
+		if (fid == nil)
+			return err;
+		if (fid.qtype & Sys->QTDIR)
+			return Eperm;
+
+		{
+			result := "";
+			case fid.path {
+				Qfindnode =>
+					key := Key.parse(string m.data);
+					if (key == nil)
+						raise "fail:bad key" + string m.data;
+					node := local.dhtfindnode(*key, nil);
+					if (node != nil)
+						result = "Node found! " + node.text() + "\n";
+					else
+						result = "Nothing was found\n";
+				Qfindvalue =>
+					key := Key.parse(string m.data);
+					if (key == nil)
+						raise "fail:bad key:" + string m.data;
+					items := local.dhtfindvalue(*key);
+					if (items != nil)
+					{
+						result = "Something found:\n";
+						for (tail := items; tail != nil; tail = tl tail)
+							result += "\t" + string (hd tail).data + "\n";
+					}
+					else
+						result = "Nothing was found\n";
+				Qstore =>
+					
+				Qping =>
+					key := Key.parse(string m.data);
+					if (key == nil)
+						raise "fail:bad key";
+					rtt := local.dhtping(*key);
+					if (rtt > 0)
+						result = "Ping success!\nGot answer in " + string rtt + " ms\n";
+					else
+						result = "No answer!\n";
+			}
+			fid.data = array of byte result;
+		}
+		exception e
+		{
+			"fail:*" =>
+				fid.data = array of byte sys->sprint("Command failed: %s\n", e[5:]);
+		}
+		# now we have the query result in fid.data, continue happily
+		srv.reply(ref Rmsg.Write(m.tag, len m.data));
 	* =>
 		srv.default(gm);
 	}
@@ -228,6 +315,7 @@ startlogfile(mountpt: string, readychan: chan of int)
 	sys->fprint(stderr, "Starting logfile on %s\n", mountpt);
 	logfile->init(nil, "logfile" :: mountpt :: nil);
 	readychan <-= 1;
+	readychan <-= 13; # the second one for waiting
 }
 
 # finish dhtfs
@@ -244,21 +332,21 @@ destroy()
 
 killgroup(pid: int)
 {
-    fd := sys->open("#p/"+(string pid)+"/ctl", sys->OWRITE);
-    if(fd != nil)
-        sys->fprint(fd, "killgrp");
+	fd := sys->open("#p/"+(string pid)+"/ctl", sys->OWRITE);
+	if(fd != nil)
+		sys->fprint(fd, "killgrp");
 }
 
 getcuruser(): string
 {
-    fd := sys->open("/dev/user", Sys->OREAD);
-    if (fd == nil)
-        return "";
-    buf := array [8192] of byte;
-    readbytes := sys->read(fd, buf, len buf);
-    if (readbytes <= 0)
-        return "";
-    return string buf[:readbytes];
+	fd := sys->open("/dev/user", Sys->OREAD);
+	if (fd == nil)
+		return "";
+	buf := array [8192] of byte;
+	readbytes := sys->read(fd, buf, len buf);
+	if (readbytes <= 0)
+		return "";
+	return string buf[:readbytes];
 }
 
 Blankdir: Sys->Dir;
@@ -266,8 +354,9 @@ dir(name: string, perm: int, qid: big): Sys->Dir
 {
 	d := Blankdir;
 	d.name = name;
+	# TODO: get this right
 	d.uid = user;
-	d.gid = "me";
+	d.gid = user;
 	d.qid.path = qid;
 	if (perm & Sys->DMDIR)
 		d.qid.qtype = Sys->QTDIR;
