@@ -25,6 +25,7 @@ Dht: module
     REPLICATE_TIME: con 3600;   # 3600
     REPUBLISH_TIME: con 60; # 86400
     RANDOMNESS:     con 1000;   # 1000
+    WAITTIME:       con 2000;   # 2000
 
     # DHT messages
     TPing,          # 100
@@ -71,6 +72,9 @@ Dht: module
     # Contacts channel actions
     QAddContact,
     QRemoveContact: con iota;
+
+    # Query for rmsg return values
+    QTimeOut: con (iota * -1);
 
     Node: adt {
         id: Key;
@@ -138,6 +142,7 @@ Dht: module
         FindValue =>
             nodes: array of Node;
             value: list of ref StoreItem;
+# TODO: remove if unused
         AskRandezvous =>
             result: int;
         Invitation =>
@@ -237,6 +242,7 @@ Dht: module
         # NAT traversing related methods
         processrandezvousquery: fn(nil: self ref Local, m: ref Tmsg.AskRandezvous, askingnode: ref Node);
         askrandezvous: fn(nil: self ref Local, nodeaddr, srvaddr: string, nodeid, srvid: Key): int;
+        queryforrmsg: fn(nil: self ref Local, node: ref Node, msg: ref Tmsg, callroutine: string): (int, ref Rmsg);
     };
 
     init:   fn();

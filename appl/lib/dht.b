@@ -880,9 +880,7 @@ Contacts.addcontact(c: self ref Contacts, n: ref Node)
             {
                 node := ref c.buckets[bucketInd].nodes[0];
                 msg := ref Tmsg.Ping(Key.generate(), c.local.node, node.id);
-                ch := c.local.sendtmsg(node, msg);
-                if (ch != nil)
-                    spawn replacefirstnode(c, *n, *node, ch, msg.uid);
+                    spawn replacefirstnode(c, n, node, msg);
             }
         EAlreadyPresent =>
             c.local.logevent("addcontact", "Already present, moving to top");
@@ -1494,8 +1492,13 @@ dhtfindnode(l: ref Local, id: Key, nodes: array of ref Node, asked: ref HashTabl
                     ret = dhtfindnode(l, id, newnodes, asked, search, retrievevalue);
             }
         --pending;
-        (node, nil) := ret;
+        (node, data) := ret;
         if (node != nil && search)
+        {
+            spawn reaper(listench, pending);
+            return ret;
+        }
+        if (len data > 0 && retrievevalue)
         {
             spawn reaper(listench, pending);
             return ret;
@@ -1512,6 +1515,45 @@ dhtfindnode(l: ref Local, id: Key, nodes: array of ref Node, asked: ref HashTabl
     
     return (nil, nil);
 }
+# Callbacks
+timer(ch: chan of int, timeout: int)
+{
+    sys->sleep(timeout);
+    ch <-= 1;
+}
+Local.queryforrmsg(l: self ref Local, node: ref Node, msg: ref Tmsg, callroutine: string): (int, ref Rmsg) 
+# (rtt, answer)
+{
+    ch := l.sendtmsg(node, msg);
+    sendtime := sys->millisec();
+    killerch := chan of int;
+    spawn timer(killerch, WAITTIME);
+
+    answer: ref Rmsg;
+    rtt := QTimeOut;
+    alt {
+        answer = <-ch =>
+            spawn timerreaper(killerch);
+	    if (tagof msg != tagof answer)
+	    {
+		l.logevent(callroutine, "Received answer, but not the desired message format");
+		answer = nil;
+                break;
+	    }
+            if (!answer.senderid.eq(node.id))
+            {
+                l.logevent(callroutine, "Received answer from unexpected node");
+		answer = nil;
+                break;
+            }
+            rtt = sys->millisec() - sendtime;
+        <-killerch =>
+            l.logevent(callroutine, "Waiting timeout");
+	    answer = nil;
+    }
+    l.callbacksch <-= (QRemoveCallback, msg.uid.text(), nil);
+    return (rtt, answer);
+}
 Local.dhtping(l: self ref Local, id: Key): int
 {
     node := l.contacts.getnode(id);
@@ -1520,34 +1562,8 @@ Local.dhtping(l: self ref Local, id: Key): int
 
     l.logevent("dhtping", "Dht ping called with " + id.text());
     msg := ref Tmsg.Ping(Key.generate(), l.node, id);
-    ch := l.sendtmsg(node, msg);
-
-    sendtime := sys->millisec();
-
-    killerch := chan of int;
-    spawn timer(killerch, 2000);
-
-    result := -1;
-    alt {
-        answer := <-ch =>
-            pick m := answer {
-                Ping =>
-                    spawn timerreaper(killerch);
-                    if (!m.senderid.eq(id))
-                    {
-                        l.logevent("dhtping", "Received answer from unexpected node");
-                        break;
-                    }
-                    result = sys->millisec() - sendtime;
-                * =>
-                    spawn timerreaper(killerch);
-                    l.logevent("dhtping", "Received answer, but not the desired message format");
-            }
-        <-killerch =>
-            l.logevent("dhtping", "Waiting timeout");
-    }
-    l.callbacksch <-= (QRemoveCallback, msg.uid.text(), nil);
-    return result;
+    (rtt, reply) := l.queryforrmsg(node, msg, "dhtping");
+    return rtt;
 }
 Local.processrandezvousquery(l: self ref Local, m: ref Tmsg.AskRandezvous, askingnode: ref Node)
 {
@@ -1555,32 +1571,14 @@ Local.processrandezvousquery(l: self ref Local, m: ref Tmsg.AskRandezvous, askin
     invitation := ref Tmsg.Invitation(Key.generate(), l.node, m.oppid,
                                                   askingnode.prvaddr, askingnode.pubaddr, askingnode.id);
     askednode := ref Node(m.oppid, m.addr, m.addr, m.addr, Key.generate());
-    ch := l.sendtmsg(askednode, invitation);
-
-    killerch := chan of int;
-    spawn timer(killerch, 2000);
-
     result := RFail;
-    alt {
-        ans := <-ch =>
-            pick m := ans {
-                Invitation =>
-                    spawn timerreaper(killerch);
-                    if (!m.senderid.eq(l.node.id)) 
-                    {
-                        l.logevent("processrandezvous", "Received answer from unexpected node");
-                        break;
-                    }
-                    if (m.result == SSuccess)
-                        result = RSuccess;
-                * =>
-                    spawn timerreaper(killerch);
-                    l.logevent("processrandezvous", "Received answer, but not the desired message format");
-            }
-        <-killerch =>
-            l.logevent("processrandezvous", "Waiting timeout");
+    (rtt, reply) := l.queryforrmsg(askednode, invitation, "processrandezvous");
+    pick r := reply {
+	Invitation =>
+            if (r.result == SSuccess)
+                result = RSuccess;
     }
-    l.callbacksch <-= (QRemoveCallback, invitation.uid.text(), nil);
+
     answer := ref Rmsg.AskRandezvous(m.uid, l.node.id, askingnode.id, result);
     l.sendrmsg(askingnode.prvaddr, askingnode.pubaddr, answer);
 }
@@ -1589,66 +1587,30 @@ Local.askrandezvous(l: self ref Local, nodeaddr, srvaddr: string, nodeid, srvid:
     l.logevent("askrandezvous", "Asking " + srvaddr + " for randezvous with " + nodeaddr + ".");
     askrandezvous := ref Tmsg.AskRandezvous(Key.generate(), l.node, srvid, nodeid, nodeaddr);
     server := ref Node(srvid, srvaddr, srvaddr, srvaddr, srvid);
-    ch := l.sendtmsg(server, askrandezvous);
-
-    killerch := chan of int;
-    spawn timer(killerch, 2000);
-
+    (rtt, reply) := l.queryforrmsg(server, askrandezvous, "askrandezvous");
     result := RFail;
-    alt {
-        answer := <-ch =>
-            pick m := answer {
-                AskRandezvous =>
-                    spawn timerreaper(killerch);
-                    if (!m.senderid.eq(l.node.id)) 
-                    {
-                        l.logevent("askrandezvous", "Received answer from unexpected node");
-                        break;
-                    }
-                    result = m.result;
-                * =>
-                    spawn timerreaper(killerch);
-                    l.logevent("askrandezvous", "Received answer, but not the desired message format");
-            }
-        <-killerch =>
-            l.logevent("askrandezvous", "Waiting timeout");
+    pick r := reply {
+	AskRandezvous =>
+	    result = r.result;
     }
-    l.callbacksch <-= (QRemoveCallback, askrandezvous.uid.text(), nil);
     return result;
 }
-# Callbacks
-timer(ch: chan of int, timeout: int)
+replacefirstnode(c: ref Contacts, toadd: ref Node, pingnode: ref Node, msg: ref Tmsg)
 {
-    sys->sleep(timeout);
-    ch <-= 1;
-}
-replacefirstnode(c: ref Contacts, toadd: Node, pingnode: Node, ch: chan of ref Rmsg, uid: Key)
-{
-    answer: ref Rmsg;
-    killerch := chan of int;
-    spawn timer(killerch, 2000);
-    alt {
-        answer = <-ch =>
-            pick m := answer {
-                Ping =>
-                    spawn timerreaper(killerch);
-                    if (!m.senderid.eq(pingnode.id))
-                    {
-                        c.local.logevent("replacefirstnode", "Received answer from unexpected node");
-                        break;
-                    }
-                    c.local.contactsch <-= (QRemoveContact, ref Node(pingnode.id, "", "", "", Key.generate()));
-                    c.local.contactsch <-= (QAddContact, ref pingnode);
-                * =>
-                    spawn timerreaper(killerch);
-                    c.local.logevent("replacefirstnode", "Received answer, but not the desired message format");
-            }
-        <-killerch =>
-            c.local.logevent("replacefirstnode", "Answer not received, killing node");
-            c.local.contactsch <-= (QRemoveContact, ref Node(pingnode.id, "", "", "", Key.generate()));
-            c.local.contactsch <-= (QAddContact, ref toadd);
+    (rtt, reply) := c.local.queryforrmsg(pingnode, msg, "replacefirstnode");
+    if (reply == nil || rtt < 0)
+    {
+        #fail
+        c.local.logevent("replacefirstnode", "Answer not received, killing node");
+        c.local.contactsch <-= (QRemoveContact, ref Node(pingnode.id, "", "", "", Key.generate()));
+        c.local.contactsch <-= (QAddContact, toadd);
     }
-    c.local.callbacksch <-= (QRemoveCallback, uid.text(), nil);
+    else
+    {
+        #success
+        c.local.contactsch <-= (QRemoveContact, ref Node(pingnode.id, "", "", "", Key.generate()));
+        c.local.contactsch <-= (QAddContact, pingnode);
+    }
 }
 findnode(l: ref Local, targetnode: ref Node, uid: Key, rch: chan of ref Rmsg, retrievevalue: int)
 {
@@ -1658,82 +1620,25 @@ findnode(l: ref Local, targetnode: ref Node, uid: Key, rch: chan of ref Rmsg, re
         msg = ref Tmsg.FindValue(Key.generate(), l.node, targetnode.id, uid);
     else
         msg = ref Tmsg.FindNode(Key.generate(), l.node, targetnode.id, uid);
-    ch := l.sendtmsg(targetnode, msg);
     answer: ref Rmsg;
-    killerch := chan of int;
-    spawn timer(killerch, 2000);
-    alt {
-        answer = <-ch =>
-            if (!answer.senderid.eq(targetnode.id))
-            {
-                l.logevent("findnode", "Received answer from unexpected node");
-                rch <-= nil;
-                break;
-            }
-            pick m := answer {
-                FindValue =>
-                    spawn timerreaper(killerch);
-                    if (!retrievevalue)
-                    {
-                        l.logevent("findnode", "Received unexpected Rmsg type");
-                        rch <-= nil;
-                        break;
-                    }
-                    rch <-= m;
-                FindNode =>
-                    spawn timerreaper(killerch);
-                    if (retrievevalue)
-                    {
-                        l.logevent("findnode", "Received unexpected Rmsg type");
-                        rch <-= nil;
-                        break;
-                    }
-                    rch <-= m;
-                * =>
-                    spawn timerreaper(killerch);
-                    l.logevent("findnode", "Received answer, but not the desired message format");
-                    rch <-= nil;
-            }
-        <-killerch =>
-            l.logevent("findnode", "Message wait timeout");
-            rch <-= nil;
-    }
-    l.callbacksch <-= (QRemoveCallback, msg.uid.text(), nil);
+    (rtt, reply) := l.queryforrmsg(targetnode, msg, "findnode");
+    rch <-= reply;
 }
 store(l: ref Local, where: ref Node, key: Key, value: ref StoreItem)
 {
     l.logevent("store", "Store called with key " + key.text());
     l.logevent("store", "Storing to  " + where.text());
     msg := ref Tmsg.Store(Key.generate(), l.node, where.id, key, value);
-    ch := l.sendtmsg(where, msg);
-    answer: ref Rmsg;
-    killerch := chan of int;
-    spawn timer(killerch, 2000);
-    alt {
-        answer = <-ch =>
-            pick m := answer {
-                Store =>
-                    spawn timerreaper(killerch);
-                    if (!m.senderid.eq(where.id))
-                    {
-                        l.logevent("store", "Received answer from unexpected node");
-                        break;
-                    }
-                    # check result code
-                    case m.result {
-                        SSuccess =>
-                            l.logevent("store", "Store to " + m.senderid.text() + ": success");
-                        SFail =>
-                            l.logevent("store", "Store to " + m.senderid.text() + ": fail");
-                    } 
-                * =>
-                    spawn timerreaper(killerch);
-                    l.logevent("store", "Received answer, but not the desired message format");
-            }
-        <-killerch =>
-            l.logevent("store", "Message wait timeout");
+    (rtt, reply) := l.queryforrmsg(where, msg, "store");
+    result := SFail;
+    pick r := reply {
+	Store =>
+	    result = r.result;
     }
-    l.callbacksch <-= (QRemoveCallback, msg.uid.text(), nil);
+    if (reply == nil || result == SFail)
+        l.logevent("store", "Store to " + reply.senderid.text() + ": fail");
+    else
+        l.logevent("store", "Store to " + reply.senderid.text() + ": success");
 }
 
 start(localaddr: string, bootstrap: array of ref Node, id: Key, logfd: ref Sys->FD): ref Local
@@ -1748,8 +1653,7 @@ start(localaddr: string, bootstrap: array of ref Node, id: Key, logfd: ref Sys->
         daytime->now());
 
     # try to announce connection
-    # TODO: fix that! address should be parsed carefully
-    # TODO: correct the first part of dial command, should be something random
+    # TODO: fix that! address should be parsed carefully # TODO: correct the first part of dial command, should be something random
     (err, c) := sys->announce("udp!*!" + string localport);
     if (err != 0)
         return nil;
@@ -1774,34 +1678,16 @@ start(localaddr: string, bootstrap: array of ref Node, id: Key, logfd: ref Sys->
 
     msg := ref Tmsg.Observe(Key.generate(), node, bootstrap[0].id);
     pubaddr: string;
-    rchan := server.sendtmsg(bootstrap[0], msg);
-    killerch := chan of int;
-    spawn timer(killerch, 3000);
-    alt {
-        answer := <-rchan =>
-            pick m := answer {
-                Observe =>
-                    spawn timerreaper(killerch);
-                    if (!m.senderid.eq(bootstrap[0].id))
-                    {
-                        server.logevent("start", "Received answer from unexpected node");
-                        break;
-                    }
-                    pubaddr = m.observedaddr;
-                * =>
-                    spawn timerreaper(killerch);
-                    server.logevent("start", "Received answer, but not the desired message format");
-            }
-        <-killerch =>
-            server.logevent("start", "Message wait timeout");
+    (rtt, reply) := server.queryforrmsg(bootstrap[0], msg, "start");
+    pick r := reply {
+	Observe =>
+	    pubaddr = r.observedaddr;
     }
     if (pubaddr == nil)
         pubaddr = localaddr;
-
     server.node.pubaddr = pubaddr;
-    
+
     server.dhtfindnode(id, bootstrap);
-    server.callbacksch <-= (QRemoveCallback, msg.uid.text(), nil);
 
     return server;
 }
