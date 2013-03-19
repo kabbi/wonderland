@@ -19,7 +19,7 @@ include "ip.m";
 include "dht.m";
     dht: Dht;
     StoreItem,Node,Bucket,Contacts,Local,K,BB,B,
-    MAXRPC,Rmsg,Tmsg: import dht;
+    MAXRPC,Rmsg,Tmsg,Stats: import dht;
 
 DEFADDR: con "udp!127.0.0.1!10000";
 
@@ -119,6 +119,16 @@ print()
     sys->print("Our own store:\n");
     printstore(local.ourstore);
 }
+
+msgnames := array [] of {
+    "TPing", "RPing",
+    "TStore", "RStore",
+    "TFindValue", "RFindValue",
+    "TFindNode", "RFindNode",
+    "TAskRandezvous", "RAskRandezvous",
+    "TInvitation", "RInvitation",
+    "TObserve", "RObserve"
+};
 
 #addnode(key: Key, verbose: int)
 #{
@@ -680,6 +690,32 @@ interactivetest(addr: string, bootstrap: ref Node)
                     addr := hd args;
                     local.node.prvaddr = addr;
                     local.node.pubaddr = addr;
+                "stats" =>
+                    stats := local.stats;
+                    sys->print("Startup time: %s\n", daytime->text(daytime->local(stats.startuptime)));
+                    sys->print("Number of sent Tmsgs: %d\n", stats.senttmsgs);
+                    sys->print("Number of sent Rmsgs: %d\n", stats.sentrmsgs);
+                    sys->print("Number of received Tmsgs: %d\n", stats.recvdtmsgs);
+                    sys->print("Number of received Rmsgs: %d\n", stats.recvdrmsgs);
+                    sys->print("Incoming msgs processing errors: %d\n", stats.processerrors);
+                    sys->print("Send error count: %d\n", stats.senderrors);
+                    sys->print("Sent msgs by type:\n");
+                    for (i := 0; i < Dht->Tmax - 100; i++)
+                        sys->print("\t%s\t%d\n", msgnames[i], stats.sentmsgsbytype[i]);
+                    sys->print("Received msgs by type:\n");
+                    for (i = 0; i < Dht->Tmax - 100; i++)
+                        sys->print("\t%s\t%d\n", msgnames[i], stats.recvmsgsbytype[i]);
+                    sys->print("API calls:\n");
+                    sys->print("\tfindvalue\t%d\n", stats.findvaluecalled);
+                    sys->print("\tfindnode\t%d\n", stats.findnodecalled);
+                    sys->print("\tstore\t%d\n", stats.storecalled);
+                    sys->print("\tping\t%d\n", stats.pingcalled);
+                    sys->print("Average rtt: %f\n", real stats.totalrtt / real stats.answersgot);
+                    sys->print("Answers got: %d\n", stats.answersgot);
+                    sys->print("Store entries expired: %d\n", stats.expiredentries);
+                    sys->print("Unanswered nodes: %d\n", stats.unanswerednodes);
+                    sys->print("Bucket overflowed: %d\n", stats.bucketoverflows);
+                    sys->print("Emitted log entries: %d\n", stats.logentries);
                 "print" =>
                     print();
                 "clear" =>

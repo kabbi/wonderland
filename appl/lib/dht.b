@@ -1040,11 +1040,13 @@ Local.process(l: self ref Local)
             raise sys->sprint("fail:Local.process:read error:%r");
         if (bytesread < H + Udp4hdrlen)
         {
+            l.stats.processerrors++;
             l.logevent("process", "Incoming packet too short, ignoring");
             continue;
         }
 
         msgtype := int buffer[4];
+        l.stats.recvmsgsbytype[msgtype - 100]++;
         if (msgtype & 1)
             spawn l.processrmsg(buffer);
         else
@@ -1055,6 +1057,7 @@ Local.processtmsg(l: self ref Local, buf: array of byte, raddr: string)
 {
     {
         (nil, msg) := Tmsg.unpack(buf);
+        l.stats.recvdtmsgs++;
         l.logevent("processtmsg", "Incoming Tmsg received");
         l.logevent("processtmsg", "Dump: " + msg.text());
         if (!msg.targetid.eq(l.node.id))
@@ -1118,6 +1121,7 @@ Local.processtmsg(l: self ref Local, buf: array of byte, raddr: string)
     exception e
     {
         "fail:*" =>
+            l.stats.processerrors++;
             l.logevent("precessrmsg", "Exception cought while processing Tmsg: " + e);
     }
 }
@@ -1125,6 +1129,7 @@ Local.processrmsg(l: self ref Local, buf: array of byte)
 {
     {
         (nil, msg) := Rmsg.unpack(buf);
+        l.stats.recvdrmsgs++;
         l.logevent("processrmsg", "Incoming Rmsg received.");
         l.logevent("processrmsg", "Dump: " + msg.text());
         if (!msg.targetid.eq(l.node.id))
@@ -1142,6 +1147,7 @@ Local.processrmsg(l: self ref Local, buf: array of byte)
     exception e
     {
         "fail:*" =>
+            l.stats.processerrors++;
             l.logevent("precessrmsg", "Exception cought while processing Rmsg: " + e);
     }
 }
@@ -1189,6 +1195,7 @@ Local.timer(l: self ref Local)
                 {
                     l.logevent("timer", "Item with key " + key.text() + " expired, removing");
                     l.storech <-= ((hd rest).key, item, nil, l.store);
+                    l.stats.expiredentries++;
                 }
             }
         }
@@ -1289,7 +1296,10 @@ Local.sendmsg(l: self ref Local, addr: string, data: array of byte)
     buffer[Udp4hdrlen:] = data[:];
     byteswritten := sys->write(l.conn.dfd, buffer, len buffer);
     if (byteswritten != len buffer)
+    {
+        l.stats.senderrors++;
         l.logevent("sendmsg", sys->sprint("Error while sending data: %r"));
+    }
 }
 Local.sendtmsg(l: self ref Local, n: ref Node, msg: ref Tmsg): chan of ref Rmsg
 {
@@ -1314,6 +1324,8 @@ Local.sendtmsg(l: self ref Local, n: ref Node, msg: ref Tmsg): chan of ref Rmsg
             #raise sys->sprint("fail:sendtmsg:send error:%r");
         }
     }
+    l.stats.senttmsgs++;
+    l.stats.sentmsgsbytype[ttag2type[tagof msg] - 100]++;
     l.logevent("sendtmsg", "Sending message to " + n.text());
     l.logevent("sendtmsg", "Dump: " + msg.text());
     ch := chan of ref Rmsg;
@@ -1333,6 +1345,8 @@ Local.sendrmsg(l: self ref Local, prvaddr: string, pubaddr: string, msg: ref Rms
         spawn l.processrmsg(msg.pack());
         return;
     }
+    l.stats.sentrmsgs++;
+    l.stats.sentmsgsbytype[rtag2type[tagof msg] - 100]++;
     l.logevent("sendrmsg", "Sending message to " + pubaddr + "/" + prvaddr);
     l.logevent("sendrmsg", "Dump: " + msg.text());
 
@@ -1358,6 +1372,7 @@ Local.setlogfd(l: self ref Local, fd: ref Sys->FD)
 }
 Local.logevent(l: self ref Local, source: string, msg: string)
 {
+    l.stats.logentries++;
     if (l.logfd != nil)
         sys->fprint(l.logfd, "[%s] %s: %s\n",
             daytime->text(daytime->local(daytime->now())), source, msg);
@@ -1376,6 +1391,7 @@ Local.dhtfindnode(l: self ref Local, id: Key, nodes: array of ref Node): ref Nod
 #    - toref(findclosenodes(id)) - if called regularly
 #    - toref(bootstrap array) - if called from bootstrap
 {
+    l.stats.findnodecalled++;
     l.logevent("dhtfindnode", "Started to search for node " + id.text());
     l.logevent("dhtfindnode", "Starting node array size: " + string len nodes);
     if (nodes == nil)
@@ -1388,6 +1404,7 @@ Local.dhtfindnode(l: self ref Local, id: Key, nodes: array of ref Node): ref Nod
 Local.dhtfindvalue(l: self ref Local, id: Key): list of ref StoreItem
 # Return value: should be list of array of byte?
 {
+    l.stats.findvaluecalled++;
     l.logevent("dhtfindvalue", "Started to search for value " + id.text());
     nodes := toref(l.contacts.findclosenodes(id));
     realnodes := array [len nodes + 1] of ref Node;
@@ -1400,6 +1417,7 @@ Local.dhtfindvalue(l: self ref Local, id: Key): list of ref StoreItem
 }
 Local.dhtstore(l: self ref Local, key: Key, data: array of byte)
 {
+    l.stats.storecalled++;
     now := daytime->now();
     item := ref StoreItem(data, now, now);
     keytext := key.text();
@@ -1547,6 +1565,8 @@ Local.queryforrmsg(l: self ref Local, node: ref Node, msg: ref Tmsg, callroutine
                 break;
             }
             rtt = sys->millisec() - sendtime;
+            l.stats.totalrtt += rtt;
+            l.stats.answersgot++;
         <-killerch =>
             l.logevent(callroutine, "Waiting timeout");
             answer = nil;
@@ -1556,6 +1576,7 @@ Local.queryforrmsg(l: self ref Local, node: ref Node, msg: ref Tmsg, callroutine
 }
 Local.dhtping(l: self ref Local, id: Key): int
 {
+    l.stats.pingcalled++;
     node := l.contacts.getnode(id);
     if (node == nil)
         raise "fail:dhtping:ping node not found";
@@ -1599,10 +1620,12 @@ Local.askrandezvous(l: self ref Local, nodeaddr, srvaddr: string, nodeid, srvid:
 }
 replacefirstnode(c: ref Contacts, toadd: ref Node, pingnode: ref Node, msg: ref Tmsg)
 {
+    c.local.stats.bucketoverflows++;
     (rtt, reply) := c.local.queryforrmsg(pingnode, msg, "replacefirstnode");
     if (reply == nil || rtt < 0)
     {
         #fail
+        c.local.stats.unanswerednodes++;
         c.local.logevent("replacefirstnode", "Answer not received, killing node");
         c.local.contactsch <-= (QRemoveContact, ref Node(pingnode.id, "", "", "", Key.generate()));
         c.local.contactsch <-= (QAddContact, toadd);
@@ -1639,9 +1662,9 @@ store(l: ref Local, where: ref Node, key: Key, value: ref StoreItem)
             result = r.result;
         }
     if (result == SFail)
-        l.logevent("store", "Store to " + reply.senderid.text() + ": fail");
+        l.logevent("store", "Store to " + where.id.text() + ": fail");
     else
-        l.logevent("store", "Store to " + reply.senderid.text() + ": success");
+        l.logevent("store", "Store to " + where.id.text() + ": success");
 }
 
 start(localaddr: string, bootstrap: array of ref Node, id: Key, logfd: ref Sys->FD): ref Local
@@ -1668,7 +1691,9 @@ start(localaddr: string, bootstrap: array of ref Node, id: Key, logfd: ref Sys->
     callbacksch := chan of (int, string, chan of ref Rmsg);
     contactsch := chan of (int, ref Node);
     storech := chan of (string, ref StoreItem, ref StoreItem, ref HashTable[list of ref StoreItem]);
-    server := ref Local(node, (localip, localport), contacts, store, localstore, callbacksch,
+    stats := ref Stats(0, 0, 0, 0, 0, 0, daytime->now(), array [Tmax - 100] of {* => 0},
+        array [Tmax - 100] of {* => 0}, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+    server := ref Local(node, (localip, localport), contacts, store, localstore, stats, callbacksch,
         hashtable->new(CALLBACKSIZE, ch), storech, contactsch, 0, 0, 0, 0, 0, logfd, c);
 
     server.contacts.local = server;

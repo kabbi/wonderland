@@ -94,6 +94,28 @@ Dht: module
         eq: fn(a, b: ref StoreItem): int;
     };
 
+    Stats: adt {
+        senttmsgs: int;                     # the total number of sent Tmsgs
+        sentrmsgs: int;                     # the total number of sent Rmsgs
+        recvdtmsgs: int;                    # the total number of received Tmsgs
+        recvdrmsgs: int;                    # the total number of received Rmsgs
+        processerrors: int;                 # the number of incoming message processing errors
+        senderrors: int;                    # the number of errors during sending
+        startuptime: int;                   # the time of dht startup
+        sentmsgsbytype: array of int;       # the number of sends of every message
+        recvmsgsbytype: array of int;       # the number of receives of every message
+        findvaluecalled: int;               # the number of times dhtfindvalue was called
+        findnodecalled: int;                # the number of times dhtfindnode was called
+        pingcalled: int;                    # the number of times ping was called
+        storecalled: int;                   # the number of times store was called
+        totalrtt: int;                      # the sum of all rtts of all received answers
+        answersgot: int;                    # the total number of received answers
+        expiredentries: int;                # the number of expired store entries
+        unanswerednodes: int;               # the number of unanswered nodes during bucket overflows
+        bucketoverflows: int;               # the count of bucket overflows
+        logentries: int;                    # the number of log entries emitted
+    };
+
     # DHT message handlers
     Tmsg: adt {
         uid: Key;
@@ -194,6 +216,8 @@ Dht: module
         # store consists of Key, data and last access time
         store: ref HashTable[list of ref StoreItem];
         ourstore: ref HashTable[list of ref StoreItem];
+        # stats object, publically usable
+        stats: ref Stats;
 
         # public API
         dhtfindnode: fn(nil: self ref Local, id: Key, nodes: array of ref Node): ref Node;
