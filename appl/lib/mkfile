@@ -36,6 +36,7 @@ TARG=\
 	deflate.dis\
 	devpointer.dis\
 	dhcpclient.dis\
+	dht.dis\
 	dial.dis\
 	dialog.dis\
 	dict.dis\
