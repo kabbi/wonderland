@@ -131,7 +131,20 @@ dialparse(addr: string): (IPaddr, int)
     parts = tl parts;
     return (ipaddr, int hd parts);
 }
-
+swap(a, b: ref Node)
+{
+    t := a;
+    a = b;
+    b = t;
+}
+randomshuffle(a: array of ref Node)
+{
+    for (i := 0; i < len a; ++i)
+    {
+        dist := abs(random->randomint(random->NotQuiteRandom) % (len a - i));
+        swap(a[i], a[i+dist]);
+    }
+}
 abs(a: int): int
 {
     if (a < 0) 
@@ -1669,7 +1682,7 @@ store(l: ref Local, where: ref Node, key: Key, value: ref StoreItem)
 
 start(localaddr: string, bootstrap: array of ref Node, id: Key, logfd: ref Sys->FD): ref Local
 {
-    node := Node(id, localaddr, localaddr, bootstrap[0].pubaddr, bootstrap[0].id);
+    randomshuffle(bootstrap);
     (localip, localport) := dialparse(localaddr);
     contacts := ref Contacts(array [1] of ref Bucket, nil);
     # construct the first bucket
@@ -1679,7 +1692,8 @@ start(localaddr: string, bootstrap: array of ref Node, id: Key, logfd: ref Sys->
         daytime->now());
 
     # try to announce connection
-    # TODO: fix that! address should be parsed carefully # TODO: correct the first part of dial command, should be something random
+    # TODO: fix that! address should be parsed carefully 
+    # TODO: correct the first part of dial command, should be something random
     (err, c) := sys->announce("udp!*!" + string localport);
     if (err != 0)
         return nil;
@@ -1693,26 +1707,48 @@ start(localaddr: string, bootstrap: array of ref Node, id: Key, logfd: ref Sys->
     storech := chan of (string, ref StoreItem, ref StoreItem, ref HashTable[list of ref StoreItem]);
     stats := ref Stats(0, 0, 0, 0, 0, 0, daytime->now(), array [Tmax - 100] of {* => 0},
         array [Tmax - 100] of {* => 0}, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+
+    node := Node(id, localaddr, localaddr, localaddr, id);
     server := ref Local(node, (localip, localport), contacts, store, localstore, stats, callbacksch,
         hashtable->new(CALLBACKSIZE, ch), storech, contactsch, 0, 0, 0, 0, 0, logfd, c);
-
     server.contacts.local = server;
 
     spawn server.process();
-    spawn server.timer();
     spawn server.callbacksproc();
     spawn server.contactsproc();
     spawn server.storeproc();
 
-    msg := ref Tmsg.Observe(Key.generate(), node, bootstrap[0].id);
-    pubaddr := localaddr;
-    (rtt, reply) := server.queryforrmsg(bootstrap[0], msg, "start");
-    if (reply != nil)
-        pick r := reply {
-            Observe =>
-                pubaddr = r.observedaddr;
+    pubaddr: string;
+    for (i := 0; i < len bootstrap; ++i)
+    {
+        server.node.srvaddr = bootstrap[i].pubaddr;
+        server.node.srvid = bootstrap[i].id;
+        msg := ref Tmsg.Observe(Key.generate(), node, bootstrap[i].id);
+        (rtt, reply) := server.queryforrmsg(bootstrap[i], msg, "start");
+        if (reply != nil)
+            pick r := reply {
+                Observe =>
+                    pubaddr = r.observedaddr;
+            }
+        if (pubaddr != nil)
+        {
+            server.node.pubaddr = pubaddr;
+            break;
         }
-    server.node.pubaddr = pubaddr;
+    }
+    if (pubaddr == nil && len bootstrap > 0)
+    {
+        server.logevent("start", "fail:none of the bootstrap servers replied");
+        server.destroy();
+        return nil;
+    }
+    if (len bootstrap == 0)
+    {
+        server.logevent("start", "starting a brand new dht server");
+        server.node.pubaddr = localaddr;
+    }
+
+    spawn server.timer();
 
     server.dhtfindnode(id, bootstrap);
 
