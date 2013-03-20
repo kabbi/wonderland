@@ -127,7 +127,7 @@ msgnames := array [] of {
     "TFindNode", "RFindNode",
     "TAskRandezvous", "RAskRandezvous",
     "TInvitation", "RInvitation",
-    "TObserve", "RObserve"
+    "TObserve", "RObserve/"
 };
 
 #addnode(key: Key, verbose: int)
@@ -710,7 +710,10 @@ interactivetest(addr: string, bootstrap: ref Node)
                     sys->print("\tfindnode\t%d\n", stats.findnodecalled);
                     sys->print("\tstore\t%d\n", stats.storecalled);
                     sys->print("\tping\t%d\n", stats.pingcalled);
-                    sys->print("Average rtt: %f\n", real stats.totalrtt / real stats.answersgot);
+                    if (stats.answersgot == 0)
+                        sys->print("Average rtt: n/a\n");
+                    else
+                        sys->print("Average rtt: %f\n", real stats.totalrtt / real stats.answersgot);
                     sys->print("Answers got: %d\n", stats.answersgot);
                     sys->print("Store entries expired: %d\n", stats.expiredentries);
                     sys->print("Unanswered nodes: %d\n", stats.unanswerednodes);
