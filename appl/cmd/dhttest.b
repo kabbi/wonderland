@@ -64,8 +64,17 @@ initlocal(addr: string, verbose: int, bootstrap: ref Node): ref Local
         addr = "udp!127.0.0.1!" + string port;
 
     key := Key.generate();
-    l := dht->start(addr, array [] of {bootstrap},
+    l: ref Local;
+    if (bootstrap != nil)
+    {
+        l = dht->start(addr, array [] of {bootstrap},
                     key, sys->open("/dev/cons", Sys->OWRITE));
+    }
+    else 
+    {
+        l = dht->start(addr, nil,
+                    key, sys->open("/dev/cons", Sys->OWRITE));
+    }
     if (l == nil)
     {
         sys->print("failed to start server!\n%r\n");
@@ -127,7 +136,7 @@ msgnames := array [] of {
     "TFindNode", "RFindNode",
     "TAskRandezvous", "RAskRandezvous",
     "TInvitation", "RInvitation",
-    "TObserve", "RObserve/"
+    "TObserve", "RObserve"
 };
 
 #addnode(key: Key, verbose: int)
@@ -791,13 +800,27 @@ init(nil: ref Draw->Context, args: list of string)
     addr := hd args;
     args = tl args;
 
-    baddr := hd args;
-    args = tl args;
-    bid := hd args;
-    args = tl args;
+    srvaddr, srvid: string;
+
+    if (args != nil && hd args != "-i")
+    {
+        srvaddr = hd args;
+        args = tl args;
+        srvid = hd args;
+        args = tl args;
+    }
 
     if (args != nil && hd args == "-i")
-        interactivetest(addr, ref Node(*Key.parse(bid), baddr, baddr, baddr, *Key.parse(bid)));
+    {
+        if (srvaddr != nil)
+        {
+            interactivetest(addr, ref Node(*Key.parse(srvid), srvaddr, srvaddr, srvaddr, *Key.parse(srvid)));
+        }
+        else
+        {
+            interactivetest(addr, nil);
+        }
+    }
     #else
     #    starttest();
 
