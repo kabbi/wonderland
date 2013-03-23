@@ -136,7 +136,8 @@ msgnames := array [] of {
     "TFindNode", "RFindNode",
     "TAskRandezvous", "RAskRandezvous",
     "TInvitation", "RInvitation",
-    "TObserve", "RObserve"
+    "TObserve", "RObserve",
+    "TUser", "RUser"
 };
 
 #addnode(key: Key, verbose: int)

@@ -65,7 +65,10 @@ TInvitation =>       H+LEN+LEN+KEY+TH,    # {pub, prv}address[4+] + key[20]
 RInvitation =>       H+BIT32SZ,           # result
 
 TObserve =>          H+TH,                # no data
-RObserve =>          H+BIT32SZ,           # result[4+]
+RObserve =>          H+BIT32SZ,           # result[4]
+
+TUser =>             H+TH+LEN,            # data[4+]
+RUser =>             H+LEN,               # data[4+]
 };
 
 badmodule(p: string)
@@ -384,7 +387,8 @@ tagof Tmsg.FindNode => TFindNode,
 tagof Tmsg.FindValue => TFindValue,
 tagof Tmsg.AskRandezvous => TAskRandezvous,
 tagof Tmsg.Invitation => TInvitation,
-tagof Tmsg.Observe => TObserve
+tagof Tmsg.Observe => TObserve,
+tagof Tmsg.User => TUser
 };
 
 Tmsg.mtype(t: self ref Tmsg): int
@@ -415,6 +419,8 @@ Tmsg.packedsize(t: self ref Tmsg): int
               len array of byte m.opppubaddr;
     Observe =>
         # no dynamic data
+    User =>
+        ml += len m.data;
     }
     return ml;
 }
@@ -449,6 +455,8 @@ Tmsg.pack(t: self ref Tmsg): array of byte
         o = pkey(d, o, m.oppid);
     Observe =>
         # no data 
+    User =>
+        o = parray(d, o, m.data);
     * =>
         raise "fail: Tmsg.pack: bad message type";
     }
@@ -518,6 +526,10 @@ Tmsg.unpack(f: array of byte): (int, ref Tmsg)
         return (o, ref Tmsg.Invitation(uid, sender, targetid, oppprvaddr, opppubaddr, oppid));
     TObserve =>
         return (o, ref Tmsg.Observe(uid, sender, targetid));
+    TUser =>
+        data: array of byte;
+        (data, o) = garray(f, o);
+        return (o, ref Tmsg.User(uid, sender, targetid, data));
     }
     raise "fail: Tmsg.unpack: malformed packet";
 }
@@ -529,7 +541,8 @@ tagof Tmsg.FindNode => "FindNode",
 tagof Tmsg.FindValue => "FindValue",
 tagof Tmsg.AskRandezvous => "AskRandezvous",
 tagof Tmsg.Invitation => "Invitation",
-tagof Tmsg.Observe => "Observe"
+tagof Tmsg.Observe => "Observe",
+tagof Tmsg.User => "User"
 };
 
 Tmsg.text(t: self ref Tmsg): string
@@ -554,6 +567,8 @@ Tmsg.text(t: self ref Tmsg): string
     Observe =>
         # no data
         return s + ")";
+    User =>
+        return s + sys->sprint("data[%ud])", len m.data);
     }
 }
 
@@ -573,7 +588,8 @@ tagof Rmsg.FindNode => RFindNode,
 tagof Rmsg.FindValue => RFindValue,
 tagof Rmsg.AskRandezvous => RAskRandezvous,
 tagof Rmsg.Invitation => RInvitation,
-tagof Rmsg.Observe => RObserve
+tagof Rmsg.Observe => RObserve,
+tagof Rmsg.User => RUser
 };
 
 Rmsg.mtype(r: self ref Rmsg): int
@@ -622,6 +638,8 @@ Rmsg.packedsize(r: self ref Rmsg): int
         # no dynamic data
     Observe =>
         ml += len array of byte m.observedaddr;
+    User =>
+        ml += len m.data;
     }
     return ml;
 }
@@ -655,6 +673,8 @@ Rmsg.pack(r: self ref Rmsg): array of byte
         o = p32(d, o, m.result);
     Observe =>
         o = pstring(d, o, m.observedaddr);
+    User =>
+        o = parray(d, o, m.data);
     * =>
         raise "fail: Rmsg.pack: bad message type";
     }
@@ -718,6 +738,10 @@ Rmsg.unpack(f: array of byte): (int, ref Rmsg)
         observedaddr: string;
         (observedaddr, o) = gstring(f, o);
         return (o, ref Rmsg.Observe(uid, senderID, targetID, observedaddr));
+    RUser =>
+        data: array of byte;
+        (data, o) = garray(f, o);
+        return (o, ref Rmsg.User(uid, senderID, targetID, data));
     }
     raise "fail: Rmsg.unpack: malformed packet";
 }
@@ -729,7 +753,8 @@ tagof Rmsg.FindNode => "FindNode",
 tagof Rmsg.FindValue => "FindValue",
 tagof Rmsg.AskRandezvous => "AskRandezvous",
 tagof Rmsg.Invitation => "Invitation",
-tagof Rmsg.Observe => "Observe"
+tagof Rmsg.Observe => "Observe",
+tagof Rmsg.User => "User"
 };
 
 Rmsg.text(r: self ref Rmsg): string
@@ -767,6 +792,8 @@ Rmsg.text(r: self ref Rmsg): string
         return s + sys->sprint("%ud)", m.result);
     Observe =>
         return s + sys->sprint("%s)", m.observedaddr);
+    User =>
+        return s + sys->sprint("data[%ud])", len m.data);
     }
 }
 
@@ -1123,6 +1150,10 @@ Local.processtmsg(l: self ref Local, buf: array of byte, raddr: string)
                 shouldadd = 0;
                 sender.pubaddr = raddr;
                 answer = ref Rmsg.Observe(m.uid, l.node.id, sender.id, raddr);
+            User =>
+                if (l.usermsghandler != nil)
+                    l.usermsghandler <-= m;
+                shouldadd = 0;
         }
 
         # add every incoming node except for observed
@@ -1709,8 +1740,8 @@ start(localaddr: string, bootstrap: array of ref Node, id: Key, logfd: ref Sys->
         array [Tmax - 100] of {* => 0}, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
 
     node := Node(id, localaddr, localaddr, localaddr, id);
-    server := ref Local(node, (localip, localport), contacts, store, localstore, stats, callbacksch,
-        hashtable->new(CALLBACKSIZE, ch), storech, contactsch, 0, 0, 0, 0, 0, logfd, c);
+    server := ref Local(node, (localip, localport), contacts, store, localstore, stats, nil,
+        callbacksch, hashtable->new(CALLBACKSIZE, ch), storech, contactsch, 0, 0, 0, 0, 0, logfd, c);
     server.contacts.local = server;
 
     spawn server.process();

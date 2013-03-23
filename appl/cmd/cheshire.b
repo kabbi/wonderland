@@ -2,6 +2,7 @@ implement Cheshire;
 include "sys.m";
     sys: Sys;
 include "draw.m";
+include "sh.m";
 include "ip.m";
     ip: IP;
     Udphdr, Udp4hdrlen, IPaddr: import ip;
@@ -46,6 +47,10 @@ HASHSIZE : con 10000;
 # DhtValue adt and serialisation
 
 BIT32SZ: con 4;
+pkey(a: array of byte, o: int, k: Key): int
+{
+    return parray(a, o, k.data);
+}
 parray(a: array of byte, o: int, sa: array of byte): int
 {
     n := len sa;
@@ -89,6 +94,13 @@ garray(a: array of byte, o: int): (array of byte, int)
         raise "fail: garray: malformed packet";
     return (a[o:e], e);
 }
+gkey(a: array of byte, o: int): (Key, int)
+{
+    (data, l) := garray(a, o);
+    if (len data != Bigkey->BB)
+        raise "fail: gkey: malformed packet";
+    return (Key(data), l);
+}
 
 # Comparator for Sys->Dir entries
 DirComp: adt {
@@ -106,7 +118,8 @@ DhtValue: adt {
     name: string;
     pick {
     StyxServer =>
-        addr: string;
+        nodeid: Key;
+        styxservid: Key;
     Folder =>
     #Program =>
     #   disCode: array of byte;
@@ -130,15 +143,13 @@ DhtValue.mtype(v: self ref DhtValue): int
 DhtValue.packedsize(v: self ref DhtValue): int
 {
     size := 1; # one byte reserved for type info
+    size += BIT32SZ;
+    size += len array of byte v.name;
     pick vv := v {
     StyxServer =>
-        size += BIT32SZ;
-        size += len array of byte vv.name;
-        size += BIT32SZ;
-        size += len array of byte vv.addr;
+        size += 2 * (BIT32SZ + Bigkey->BB);
     Folder =>
-        size += BIT32SZ;
-        size += len array of byte vv.name;
+        # no data
     }
     return size;
 }
@@ -147,12 +158,13 @@ DhtValue.pack(v: self ref DhtValue): array of byte
     o := 0;
     a := array [v.packedsize()] of byte;
     a[o++] = byte v.mtype();
+    o = pstring(a, o, v.name);
     pick vv := v {
     StyxServer =>
-        o = pstring(a, o, vv.name);
-        o = pstring(a, o, vv.addr);
+        o = pkey(a, o, vv.nodeid);
+        o = pkey(a, o, vv.styxservid);
     Folder =>
-        o = pstring(a, o, vv.name);
+        # no data
     * =>
         raise "fail:DhtValue.pack:bad value type";
     }
@@ -162,15 +174,15 @@ DhtValue.unpack(a: array of byte): (int, ref DhtValue)
 {
     o := 1;
     mtype := a[0];
+    name: string;
+    (name, o) = gstring(a, o);
     case int mtype {
     VStyxServer =>
-        name, addr: string;
-        (name, o) = gstring(a, o);
-        (addr, o) = gstring(a, o);
-        return (len a, ref DhtValue.StyxServer(name, addr));
+        nodeid, styxservid: Key;
+        (nodeid, o) = gkey(a, o);
+        (styxservid, o) = gkey(a, o);
+        return (len a, ref DhtValue.StyxServer(name, nodeid, styxservid));
     VFolder =>
-        name: string;
-        (name, o) = gstring(a, o);
         return (len a, ref DhtValue.Folder(name));
     * =>
         raise "fail:DhtValue.unpack:bad value type";
@@ -182,7 +194,7 @@ DhtValue.text(v: self ref DhtValue): string
         return "DhtValue(nil)";
     pick vv := v {
     StyxServer =>
-        return sys->sprint("DhtValue.StyxServer(%s, %s)", vv.name, vv.addr);
+        return sys->sprint("DhtValue.StyxServer(%s, %s, %s)", vv.name, vv.nodeid.text(), vv.styxservid.text());
     Folder =>
         return sys->sprint("DhtValue.Folder(%s)", vv.name);
     * =>
@@ -217,11 +229,11 @@ stderr: ref Sys->FD;
 dhtlogfd: ref Sys->FD;
 mainpid: int;
 
-Qdummy, Qroot, Qcheshire, Qwelcome, Qaddserver, Qbootstrap,
+Qdummy, Qroot, Qcheshire, Qwelcome, Qaddserver,
 Qdhtlog, Qlastpath: con big iota;
 Qlast: big;
 reservedqids := array [] of 
-  {Qroot, Qcheshire, Qwelcome, Qaddserver, Qbootstrap, Qdhtlog};
+  {Qroot, Qcheshire, Qwelcome, Qaddserver, Qdhtlog};
 
 local: ref Local;
 
@@ -290,13 +302,16 @@ startdht()
     if (dhtlogfd != nil)
         sys->fprint(stderr, "Dht logging started\n");
     sys->fprint(stderr, "Dht started\n");
+    local.usermsghandler = chan of (ref Dht->Tmsg.User);
+    spawn dhtmsghandler();
 }
 
 init(nil: ref Draw->Context, args: list of string)
 {
+    # TODO: fix arguments processing, usage, help and mounting
     args = tl args;
-    if (len args == 0)
-        raise "fail:local address required as first argument";
+    if (len args != 2)
+        raise "fail:usage: cheshire <local addr> <neighbours file>";
     # loading modules
     sys = load Sys Sys->PATH;
     
@@ -309,6 +324,7 @@ init(nil: ref Draw->Context, args: list of string)
     if (styxservers == nil)
         badmodule(Styxservers->PATH);
     styxservers->init(styx);
+    styxservers->traceset(1);
     daytime = load Daytime Daytime->PATH;
     if (daytime == nil)
         badmodule(Daytime->PATH);
@@ -371,28 +387,21 @@ init(nil: ref Draw->Context, args: list of string)
     synthfilemap.insert(string Qwelcome, ref dir("welcome", 8r555, Qwelcome));
     synthfilemap.insert(string Qaddserver, ref dir("addserver", 8r777, Qaddserver));
     synthfilemap.insert(string Qdhtlog, ref dir("dhtlog", 8r555, Qdhtlog));
-    synthfilemap.insert(string Qbootstrap, ref dir("bootstrap", 8r755, Qbootstrap));
     synthupmap = hashtable->new(HASHSIZE, "");
     synthupmap.insert(string Qcheshire, string Qroot);
-    if (len args == 1)
-    {
-        curcontent := synthdirmap.find(string Qcheshire);
-        synthdirmap.delete(string Qcheshire);
-        synthdirmap.insert(string Qcheshire, Qbootstrap :: curcontent);
-    }
-    else
-    {
-        fd := sys->open(hd tl args, Sys->OREAD);
-        if (fd == nil)
-            raise "fail:bootstrap file not found";
-        buf := array [8192] of byte;
-        readbytes := sys->read(fd, buf, len buf);
-        if (readbytes <= 0)
-            raise "fail:bootstrap file not found";
-        sys->fprint(stderr, "Parsing bootstrap\n");
-        straplist = strapparse(string buf[:readbytes]);
-        startdht();
-    }
+
+    # parse bootstrap file
+    fd := sys->open(hd tl args, Sys->OREAD);
+    if (fd == nil)
+        raise "fail:bootstrap file not found";
+    buf := array [8192] of byte;
+    readbytes := sys->read(fd, buf, len buf);
+    if (readbytes < 0)
+        raise "fail:bootstrap file not found";
+    sys->fprint(stderr, "Parsing bootstrap\n");
+    straplist = strapparse(string buf[:readbytes]);
+    startdht();
+
     Qlast = Qlastpath;
 
     sys->fprint(stderr, "Cheshire is up and running!\n");
@@ -402,14 +411,15 @@ init(nil: ref Draw->Context, args: list of string)
     pathtoqid.insert("/", string Qroot);
 
     mountpoints = hashtable->new(HASHSIZE, "");
+    runningstyxservers = hashtable->new(HASHSIZE, stderr);
+    styxclients = hashtable->new(HASHSIZE, stderr);
 
     # starting message processing loop
     for (;;) {
         gm := <-tchan;
         if (gm == nil) {
             sys->fprint(stderr, "Walking away...\n");
-            if (local != nil)
-                local.destroy();
+            local.destroy();
             navops <-= nil;
             exit;
         }
@@ -418,6 +428,8 @@ init(nil: ref Draw->Context, args: list of string)
             srv.reply(r);
     }
 }
+
+# Main cheshire message handling loop
 
 handlemsg(gm: ref Styx->Tmsg, srv: ref Styxserver, nav: ref Navigator): ref Styx->Rmsg
 {
@@ -462,13 +474,6 @@ handlemsg(gm: ref Styx->Tmsg, srv: ref Styxserver, nav: ref Navigator): ref Styx
                 result := serverparse(request);
                 c.data = array of byte result;
             }
-            else if (c.path == Qbootstrap && straplist == nil)
-            {
-                request: string;
-                (answer, request) = writestring(m);
-                straplist = strapparse(request);
-                startdht();
-            }
             else
                 answer = ref Rmsg.Error(m.tag, Eperm);
             return answer;
@@ -481,6 +486,8 @@ handlemsg(gm: ref Styx->Tmsg, srv: ref Styxserver, nav: ref Navigator): ref Styx
     }
     return reply;
 }
+
+# Navigator implementation, for cheshire to know the content of the folders
 
 navigator(navops: chan of ref styxservers->Navop)
 {
@@ -535,8 +542,8 @@ navigator(navops: chan of ref styxservers->Navop)
                         StyxServer =>
                             if (mountpoints.find(destpath) == nil)
                             {
-                                mountpoints.insert(destpath, entry.addr);
-                                spawn mountserver(entry.addr, mountedon + destpath);
+                                mountpoints.insert(destpath, "started");
+                                spawn mountserver(entry, mountedon + destpath);
                             }
                             n.reply <-= (ref dir(n.name, Sys->DMDIR | 8r555, big destqid), nil);
                         Folder =>
@@ -580,8 +587,10 @@ navigator(navops: chan of ref styxservers->Navop)
     }
 }
 
-# returns 1 if we should finish navop processing
+# Our own, synthetic fs handling (/cheshire/)
+
 synthnavigator(op: ref styxservers->Navop): int
+# returns 1 if we should finish navop processing
 {
     pick n := op {
         Stat =>
@@ -628,38 +637,120 @@ synthnavigator(op: ref styxservers->Navop): int
     return 0;
 }
 
-mountserver(addr: string, path: string)
+# Cheshire styx server handling, common functions
+
+styxclients: ref Hashtable->HashTable[ref Sys->FD];     # key - node addr
+
+dhtmsghandler()
 {
-    # TODO: error handling
-    # Connect
-    sys->fprint(stderr, "Dialing to %s -- ", addr);
-    (err, conn) := sys->dial(addr, "");
-    if (err != 0)
-    return;#    return sys->sprint("Fail: can not connect to styxserver at %s", addr);
-    sys->fprint(stderr, "Ok!\n");
-    # Authorize
-    (fd, auerr) := auth->client("none", authinfo, conn.dfd);
-    if (fd == nil) # TODO: here  ^^^^ use some proper crypto algorithm selection
-    return;#    return sys->sprint("Fail: Unable to authorize the server: %s", auerr);
-    sys->fprint(stderr, "Authorize -- Ok!\n");
-    # Mount
-    if (sys->mount(fd, nil, path, Sys->MREPL, nil) < 0)
-    ;#    return "fail: unable to mount";
-    sys->fprint(stderr, "Mount -- Ok!\n");
-    #return nil;
+    while (1)
+    {
+        msg := <-local.usermsghandler;
+        sys->fprint(stderr, "Incoming msg from %s", (ref msg.sender).text());
+        # strip the destination from the message
+        if (len msg.data <= Bigkey->BB)
+        {
+            sys->fprint(stderr, "Message too short, ignored\n");
+            continue;
+        }
+        styxservid := Key(msg.data[:Bigkey->BB]);
+        msgdata := msg.data[Bigkey->BB:];
+        # firstly clone the server for the client, if it's his first message
+        # TODO: why pubaddr? we deserve better address
+        clientfd := styxclients.find(msg.sender.pubaddr);
+        if (clientfd == nil)
+        {
+            styxservfd := runningstyxservers.find(styxservid.text());
+            if (styxservfd == nil)
+            {
+                sys->fprint(stderr, "The running styx server with id %s does not exist\n", styxservid.text());
+                continue;
+            }
+            sys->fprint(stderr, "Cloning server for this client\n");
+            clientfd = cloneserver(styxservfd);
+            styxclients.insert(msg.sender.pubaddr, clientfd);
+        }
+        # if ok, pass the data to styxserver and push answer to the node
+        sys->fprint(stderr, "Passing packet to styxserver\n");
+        buf := array [Sys->ATOMICIO] of byte;
+        # don't forget to strip server id
+        sys->write(clientfd, msgdata, len msgdata);
+        readbytes := sys->read(clientfd, buf, len buf);
+        local.sendrmsg(msg.sender.prvaddr, msg.sender.pubaddr,
+            ref (Dht->Rmsg).User(msg.uid, local.node.id, msg.sender.id, buf[:readbytes]));
+        sys->fprint(stderr, "Answered\n");
+    }
 }
 
-getcuruser(): string
+# Cheshire styx server handling, mounting side
+
+mountserver(serv: ref DhtValue.StyxServer, path: string)
 {
-    fd := sys->open("/dev/user", Sys->OREAD);
-    if (fd == nil)
-        return "";
-    buf := array [8192] of byte;
-    readbytes := sys->read(fd, buf, len buf);
-    if (readbytes <= 0)
-        return "";
-    return string buf[:readbytes];
+    ## TODO: error handling
+    ## Connect
+    #sys->fprint(stderr, "Dialing to %s -- ", addr);
+    #(err, conn) := sys->dial(addr, "");
+    #if (err != 0)
+    #return;#    return sys->sprint("Fail: can not connect to styxserver at %s", addr);
+    #sys->fprint(stderr, "Ok!\n");
+    ## Authorize
+    #(fd, auerr) := auth->client("none", authinfo, conn.dfd);
+    #if (fd == nil) # TODO: here  ^^^^ use some proper crypto algorithm selection
+    #return;#    return sys->sprint("Fail: Unable to authorize the server: %s", auerr);
+    #sys->fprint(stderr, "Authorize -- Ok!\n");
+    ## Mount
+    #if (sys->mount(fd, nil, path, Sys->MREPL, nil) < 0)
+    #;#    return "fail: unable to mount";
+    #sys->fprint(stderr, "Mount -- Ok!\n");
+    ##return nil;
+    servnode := local.dhtfindnode(serv.nodeid, nil);
+    if (serv.nodeid.eq(local.node.id))
+        servnode = ref local.node;
+    if (servnode == nil)
+    {
+        sys->fprint(stderr, "Node hosting server not found, try again later\n");
+        return;
+    }
+    # we will use that to proxy styx requests
+    fds := array [2] of ref Sys->FD;
+    sys->pipe(fds);
+    spawn remotemounter(servnode, serv.styxservid, fds[1]);
+    sys->fprint(stderr, "Waiting for sys->mount to return\n");
+    sys->mount(fds[0], nil, path, Sys->MREPL, nil);
+    sys->fprint(stderr, "Mount success, maybe\n");
 }
+
+remotemounter(servnode: ref Node, styxservid: Key, servfd: ref Sys->FD)
+{
+    sys->fprint(stderr, "Starting mounter, using node: %s\n", servnode.text());
+    while (1)
+    {
+        # pass the message to styx server through dht
+        buf := array [Sys->ATOMICIO] of byte;
+        sys->fprint(stderr, "Reading data from sys->mount\n");
+        readbytes := sys->read(servfd, buf, len buf);
+        sys->fprint(stderr, "Got something - %d bytes, processing\n", readbytes);
+        # prepare the message
+        msg := array [readbytes + Bigkey->BB] of byte;
+        msg[:] = styxservid.data[:Bigkey->BB];
+        msg[Bigkey->BB:] = buf[:readbytes];
+        # send it using dht power
+        dhtmsg := ref (Dht->Tmsg).User(Key.generate(), local.node, servnode.id, msg);
+        sys->fprint(stderr, "Message sent to server: %s\n", styxservid.text());
+        sys->fprint(stderr, "Awaiting response\n");
+        (rtt, reply) := local.queryforrmsg(servnode, dhtmsg, "cheshire:remotemounter");
+        if (reply != nil)
+            pick r := reply {
+                User =>
+                    sys->fprint(stderr, "Got answer, passing back to system\n");
+                    sys->write(servfd, r.data, len r.data);
+            }
+    }
+}
+
+# Cheshire styx server handling, server side
+
+runningstyxservers: ref Hashtable->HashTable[ref Sys->FD]; # key - styxservid
 
 serverparse(s: string): string
 {
@@ -667,22 +758,24 @@ serverparse(s: string): string
     for (it := strings; it != nil; it = tl it)
     {
         sys->fprint(stderr, "Parsing addserver entry: %s\n", hd it);
-        (addr, fullpath) := str->splitl(hd it, " ");
-        if (fullpath == nil || addr[:1] == "#")
+        (cmd, fullpath) := str->splitr(hd it, " ");
+        if (fullpath == nil || cmd == nil || cmd[:1] == "#")
             continue;
-        fullpath = fullpath[1:]; # skip one space
+        #fullpath = fullpath[1:]; # skip one space
         (path, name) := str->splitr(fullpath, "/");
         if (path == nil)
             path = "/";
 
         # add the given server to dht, key=hash(fullpath)
-        value := ref DhtValue.StyxServer(name, addr);
+        value := ref DhtValue.StyxServer(name, local.node.id, Key.generate());
         keydata := array [keyring->SHA1dlen] of byte;
         hashdata := array of byte path;
         keyring->sha1(hashdata, len hashdata, keydata, nil);
         local.dhtstore(Key(keydata[:Bigkey->BB]), value.pack());
         sys->fprint(stderr, "Added server by path: %s, dht key: %s\n%s\n", 
                             path, Key(keydata[:Bigkey->BB]).text(), value.text());
+        # the most importand part:
+        startserver(cmd, value.styxservid);
         # and now for every path component
         (nil, folders) := sys->tokenize(path, "/");
         curpath := "/";
@@ -702,8 +795,86 @@ serverparse(s: string): string
             curpath += folder + "/";
         }
     }
-    return "ok";
+    return "ok"; 
 }
+
+startserver(cmd: string, id: Key)
+{
+    sys->fprint(stderr, "Starting styx server with cmd: %s and key %s\n", cmd, id.text());
+    # TODO: here, above and below: despawn everything carefully, watch
+    #       closed streams and think about isolating threads (more or less)
+    ch := chan of int;
+    (nil, args) := sys->tokenize(cmd, " ");
+    runningstyxservers.insert(id.text(), popen(nil, args, ch));
+}
+
+cloneserver(servfd: ref Sys->FD): ref Sys->FD
+{
+    ch := chan of ref Sys->FD;
+    sys->fprint(stderr, "Spawning exportproc\n");
+    spawn exportproc(ch, servfd);
+    return <-ch;
+}
+
+exportproc(ch: chan of ref Sys->FD, servfd: ref Sys->FD)
+{
+    fds := array [2] of ref Sys->FD;
+    sys->pipe(fds);
+    sys->fprint(stderr, "Debug 1\n");
+    ch <-= fds[1]; # return the second pipe end
+    sys->fprint(stderr, "Debug 2\n");
+    # isolate self
+    sys->pctl(Sys->NEWFD | Sys->NEWNS, 2 :: servfd.fd :: fds[0].fd :: nil);
+    servfd = sys->fildes(servfd.fd);
+    fds[0] = sys->fildes(fds[0].fd);
+    stderr := sys->fildes(2);
+
+    # comment from styxlisten.b:
+    # XXX unfortunately we cannot pass through the aname from
+    # the original attach, an inherent shortcoming of this scheme.
+    sys->fprint(stderr, "Mounting on /\n");
+    if (sys->mount(servfd, nil, "/", Sys->MREPL|Sys->MCREATE, nil) == -1)
+        sys->fprint(stderr, "Cannot mount: %r\n");
+
+    sys->fprint(stderr, "Exporting /\n");
+    sys->export(fds[0], "/", Sys->EXPASYNC);
+}
+
+popen(ctxt: ref Draw->Context, argv: list of string, lsync: chan of int): ref Sys->FD
+{
+    sync := chan of int;
+    fds := array [2] of ref Sys->FD;
+    sys->pipe(fds);
+    spawn runcmd(ctxt, argv, fds[0], sync, lsync);
+    #<-sync;
+    return fds[1];
+}
+
+runcmd(ctxt: ref Draw->Context, argv: list of string, stdin: ref Sys->FD,
+        sync: chan of int, lsync: chan of int)
+{
+    sys->pctl(Sys->FORKFD, nil);
+    sys->dup(stdin.fd, 0);
+    stdin = nil;
+    #sync <-= 0;
+    sh := load Sh Sh->PATH;
+    sys->fprint(stderr, "Executing %s\n", hd argv);
+    e := sh->run(ctxt, argv);
+    #kill(<-lsync, "kill");
+
+    if(e != nil)
+        sys->fprint(stderr, "cheshire: command exited with error: %s\n", e);
+    else
+        sys->fprint(stderr, "cheshire: command exited\n");
+
+}
+
+kill(pid: int, how: string)
+{
+    sys->fprint(sys->open("/prog/"+string pid+"/ctl", Sys->OWRITE), "%s", how);
+}
+
+# Misc utility functions
 
 strapparse(s: string): array of ref Node
 {
@@ -712,6 +883,7 @@ strapparse(s: string): array of ref Node
     i := 0;
     for (it := strings; it != nil; it = tl it)
     {
+        # TODO: adopt to the new Node format
         sys->fprint(stderr, "Parsing bootstrap entry: %s\n", hd it);
         (nil, blocks) := sys->tokenize(hd it, " ");
         if (blocks == nil || len blocks != 2 || (hd blocks)[:1] == "#")
@@ -720,6 +892,18 @@ strapparse(s: string): array of ref Node
                                                    hd tl blocks, *Key.parse(hd blocks));
     }
     return ret[:i];
+}
+
+getcuruser(): string
+{
+    fd := sys->open("/dev/user", Sys->OREAD);
+    if (fd == nil)
+        return "";
+    buf := array [8192] of byte;
+    readbytes := sys->read(fd, buf, len buf);
+    if (readbytes <= 0)
+        return "";
+    return string buf[:readbytes];
 }
 
 Blankdir: Sys->Dir;

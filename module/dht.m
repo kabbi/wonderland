@@ -40,8 +40,10 @@ Dht: module
     RAskRandezvous,
     TInvitation,    # 110
     RInvitation,
-    TObserve,    # 112
+    TObserve,       # 112
     RObserve,
+    TUser,          # 114
+    RUser,
     Tmax: con 100+iota;
 
     # DHT functions error codes
@@ -140,6 +142,8 @@ Dht: module
             oppid: Key;
         Observe =>
             # no data
+        User =>
+            data: array of byte;
         }
 
         read:   fn(fd: ref Sys->FD, msize: int): ref Tmsg;
@@ -171,6 +175,8 @@ Dht: module
             result: int;
         Observe =>
             observedaddr: string;
+        User =>
+            data: array of byte;
         }
 
         read:   fn(fd: ref Sys->FD, msize: int): ref Rmsg;
@@ -218,6 +224,7 @@ Dht: module
         ourstore: ref HashTable[list of ref StoreItem];
         # stats object, publically usable
         stats: ref Stats;
+        usermsghandler: chan of (ref Tmsg.User);
 
         # public API
         dhtfindnode: fn(nil: self ref Local, id: Key, nodes: array of ref Node): ref Node;
