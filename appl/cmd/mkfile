@@ -41,6 +41,7 @@ TARG=\
 	cat.dis\
 	cd.dis\
 	cddb.dis\
+	cheshire.dis\
 	chgrp.dis\
 	chmod.dis\
 	cleanname.dis\

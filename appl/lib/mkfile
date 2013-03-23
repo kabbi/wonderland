@@ -20,6 +20,7 @@ TARG=\
 	attrhash.dis\
 	auth.dis\
 	auth9.dis\
+	bigkey.dis\
 	bloomfilter.dis\
 	bufio.dis\
 	cfg.dis\
@@ -55,6 +56,7 @@ TARG=\
 	fsproto.dis\
 	gamer.dis\
 	hash.dis\
+	hashtable.dis\
 	html.dis\
 	imageremap.dis\
 	inflate.dis\
