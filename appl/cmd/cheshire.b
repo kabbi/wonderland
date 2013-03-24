@@ -740,7 +740,7 @@ remotemounter(servnode: ref Node, styxservid: Key, servfd: ref Sys->FD)
             }
         else
         {
-            answer := ref Rmsg->Error(m.tag, "Dht traverse error: message wait timeout");
+            answer := ref Rmsg.Error(m.tag, "Dht traverse error: message wait timeout");
             packedanswer := answer.pack();
             sys->write(servfd, packedanswer, len packedanswer);
         }
