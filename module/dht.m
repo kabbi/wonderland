@@ -8,7 +8,7 @@ Dht: module
     BIT64SZ:    con 8;
 
     IOHDRSZ:    con 70; # room for Tmsg/Rmsg header
-    MAXFDATA: con 8192; # `reasonable' iounit
+    MAXFDATA: con 10000; # `reasonable' iounit (was 8192)
     MAXRPC: con IOHDRSZ+MAXFDATA;   # usable default for fversion and iounit
 
     # The code below comes mostly from the Kademlia specs

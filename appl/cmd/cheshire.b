@@ -672,7 +672,7 @@ dhtmsghandler()
         }
         # if ok, pass the data to styxserver and push answer to the node
         sys->fprint(stderr, "Passing packet to styxserver\n");
-        buf := array [Sys->ATOMICIO] of byte;
+        buf := array [Styx->MAXRPC] of byte;
         # don't forget to strip server id
         sys->write(clientfd, msgdata, len msgdata);
         readbytes := sys->read(clientfd, buf, len buf);
@@ -686,23 +686,6 @@ dhtmsghandler()
 
 mountserver(serv: ref DhtValue.StyxServer, path: string)
 {
-    ## TODO: error handling
-    ## Connect
-    #sys->fprint(stderr, "Dialing to %s -- ", addr);
-    #(err, conn) := sys->dial(addr, "");
-    #if (err != 0)
-    #return;#    return sys->sprint("Fail: can not connect to styxserver at %s", addr);
-    #sys->fprint(stderr, "Ok!\n");
-    ## Authorize
-    #(fd, auerr) := auth->client("none", authinfo, conn.dfd);
-    #if (fd == nil) # TODO: here  ^^^^ use some proper crypto algorithm selection
-    #return;#    return sys->sprint("Fail: Unable to authorize the server: %s", auerr);
-    #sys->fprint(stderr, "Authorize -- Ok!\n");
-    ## Mount
-    #if (sys->mount(fd, nil, path, Sys->MREPL, nil) < 0)
-    #;#    return "fail: unable to mount";
-    #sys->fprint(stderr, "Mount -- Ok!\n");
-    ##return nil;
     servnode := local.dhtfindnode(serv.nodeid, nil);
     if (serv.nodeid.eq(local.node.id))
         servnode = ref local.node;
@@ -726,10 +709,14 @@ remotemounter(servnode: ref Node, styxservid: Key, servfd: ref Sys->FD)
     while (1)
     {
         # pass the message to styx server through dht
-        buf := array [Sys->ATOMICIO] of byte;
+        buf := array [Styx->MAXRPC] of byte;
         sys->fprint(stderr, "Reading data from sys->mount\n");
         readbytes := sys->read(servfd, buf, len buf);
         sys->fprint(stderr, "Got something - %d bytes, processing\n", readbytes);
+        (l, m) := Tmsg.unpack(buf[:readbytes]);
+        sys->fprint(stderr, "Trying to unpack: %d\n", l);
+        if (m != nil)
+            sys->fprint(stderr, "Message: %s\n", m.text());
         # prepare the message
         msg := array [readbytes + Bigkey->BB] of byte;
         msg[:] = styxservid.data[:Bigkey->BB];
@@ -742,9 +729,21 @@ remotemounter(servnode: ref Node, styxservid: Key, servfd: ref Sys->FD)
         if (reply != nil)
             pick r := reply {
                 User =>
-                    sys->fprint(stderr, "Got answer, passing back to system\n");
+                    sys->fprint(stderr, "Got answer (%d bytes), passing back to system\n", len r.data);
+                    {
+                        (l, m) := Rmsg.unpack(r.data);
+                        sys->fprint(stderr, "Trying to unpack the answer: %d\n", l);
+                        if (m != nil)
+                            sys->fprint(stderr, "Message: %s\n", m.text());
+                    }
                     sys->write(servfd, r.data, len r.data);
             }
+        else
+        {
+            answer := ref Rmsg->Error(m.tag, "Dht traverse error: message wait timeout");
+            packedanswer := answer.pack();
+            sys->write(servfd, packedanswer, len packedanswer);
+        }
     }
 }
 
