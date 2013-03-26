@@ -25,7 +25,7 @@ Dht: module
     REPLICATE_TIME: con 3600;   # 3600
     REPUBLISH_TIME: con 60; # 86400
     RANDOMNESS:     con 1000;   # 1000
-    WAITTIME:       con 2000;   # 2000
+    WAITTIME:       con 5000;   # 2000
 
     # DHT messages
     TPing,          # 100

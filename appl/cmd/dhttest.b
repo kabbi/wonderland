@@ -35,6 +35,13 @@ badmodule(p: string)
 
 local: ref Local;
 
+abs(a: int): int
+{
+    if (a < 0) 
+        a *= -1;
+    return a;
+}
+
 arreq(a1, a2: array of byte): int
 {
     if (len a1 != len a2)
@@ -52,6 +59,31 @@ dist(k1, k2: Key): Key
     for (i := 0; i < BB; i++)
         r.data[i] ^= k2.data[i];
     return r;
+}
+
+usercallbackpid: int;
+usertestcallback()
+{
+    usercallbackpid = sys->pctl(0, nil);
+    ch := chan of (ref Tmsg.User);
+    local.usermsghandler = ch;
+    while (1)
+    {
+        msg := <-ch;
+        sys->print("Got packet number %d\n", int msg.data[0]);
+        l := abs(random->randomint(random->NotQuiteRandom)) % 100;
+        answer := random->randombuf(random->NotQuiteRandom,  l + 5);
+        answer[0] = byte 42;
+        local.sendrmsg(msg.sender.prvaddr, msg.sender.pubaddr,
+            ref (Dht->Rmsg).User(msg.uid, local.node.id, msg.sender.id, answer));
+    }
+}
+
+kill(pid: int, how: string)
+{
+    fd := sys->open("#p/"+(string pid)+"/ctl", sys->OWRITE);
+    if(fd != nil)
+        sys->fprint(fd, "%s", how);
 }
 
 initlocal(addr: string, verbose: int, bootstrap: ref Node): ref Local
@@ -536,6 +568,7 @@ interactivetest(addr: string, bootstrap: ref Node)
     servers := array [1] of ref Local;
     servers[0] = initlocal(addr, 1, bootstrap);
     local = servers[0];
+    spawn usertestcallback();
 
     stdin := sys->fildes(0);
     print();
@@ -729,6 +762,36 @@ interactivetest(addr: string, bootstrap: ref Node)
                     sys->print("Unanswered nodes: %d\n", stats.unanswerednodes);
                     sys->print("Bucket overflowed: %d\n", stats.bucketoverflows);
                     sys->print("Emitted log entries: %d\n", stats.logentries);
+                "usertest" =>
+                    args = tl args;
+                    if (args == nil)
+                        raise "fail:bad args";
+                    key := Key.parse(hd args);
+                    if (key == nil)
+                        raise "fail:bad key";
+                    args = tl args;
+                    count := int hd args;
+                    node := local.dhtfindnode(*key, nil);
+                    if ((*key).eq(local.node.id))
+                        node = ref local.node;
+                    if (node == nil)
+                        raise "fail:node not found";
+                    for (i := 0; i < count; i++)
+                    {
+                        l := abs(random->randomint(random->NotQuiteRandom)) % 100;
+                        data := random->randombuf(random->NotQuiteRandom, l + 5);
+                        buf[0] = byte (i + 1);
+                        msg := ref Tmsg.User(Key.generate(), local.node, node.id, buf);
+                        sys->print("Sending message #%d\n", i + 1);
+                        (rtt, reply) := local.queryforrmsg(node, msg, "dhttest");
+                        if (reply != nil)
+                        {
+                            pick m := reply {
+                                User =>
+                                    sys->print("Got answer, good!\n");
+                            }
+                        }
+                    }
                 "print" =>
                     print();
                 "clear" =>
@@ -827,4 +890,5 @@ init(nil: ref Draw->Context, args: list of string)
 
     sys->print("cleaning up\n");
     local.destroy();
+    kill(usercallbackpid, "kill");
 }
