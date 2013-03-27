@@ -31,6 +31,7 @@ include "dht.m";
 
 Dhtfs: module {
     init: fn(nil: ref Draw->Context, argv: list of string);
+    initwithdht: fn(local: ref Local, mountpt: string, flags: int, debug: int);
 };
 Logfile: module {
     init: fn(nil: ref Draw->Context, argv: list of string);
@@ -38,7 +39,7 @@ Logfile: module {
 
 Qroot: con big 16rfffffff;
 Qfindnode, Qfindvalue, Qstore, Qping, Qstats, Qstatus, 
-Qlocalstore, Qcontacts, Qbootstrap, Qnode: con big iota + big 16r42;
+Qlocalstore, Qcontacts, Qnode: con big iota + big 16r42;
 tree: ref Tree;
 nav: ref Navigator;
 logfilepid: int;
@@ -104,9 +105,8 @@ getstats(local: ref Local): string
     return ret;
 }
 
-init(nil: ref Draw->Context, args: list of string)
+loadmodules()
 {
-    # load some modules
     sys = load Sys Sys->PATH;
     ip = load IP IP->PATH;
     if (ip == nil)
@@ -130,10 +130,21 @@ init(nil: ref Draw->Context, args: list of string)
     if (bigkey == nil)
         badmodule(Bigkey->PATH);
     bigkey->init();
+    hashtable = load Hashtable Hashtable->PATH;
+    if (hashtable == nil)
+        badmodule(Hashtable->PATH);
+    daytime = load Daytime Daytime->PATH;
+    if (daytime == nil)
+        badmodule(Daytime->PATH);
     dht = load Dht Dht->PATH;
     if (dht == nil)
         badmodule(Dht->PATH);
     dht->init();
+}
+
+init(nil: ref Draw->Context, args: list of string)
+{
+    loadmodules();
 
     # setup a pipe
     fds := array [2] of ref Sys->FD;
@@ -144,7 +155,6 @@ init(nil: ref Draw->Context, args: list of string)
     }
 
     bootstrapfile, localaddr: string;
-    logfile: ref Sys->FD;
     # get some usefull things
     user = getcuruser();
     stderr = sys->fildes(2);
@@ -173,9 +183,9 @@ init(nil: ref Draw->Context, args: list of string)
         flags |= Sys->MCREATE;
     localaddr = hd args;
     args = tl args;
-    mountpt := hd args;
-    args = tl args;
     bootstrapfile = hd args;
+    args = tl args;
+    mountpt := hd args;
     args = tl args;
 
     # setup styx servers
@@ -184,19 +194,6 @@ init(nil: ref Draw->Context, args: list of string)
     nav = Navigator.new(navop);
     (tchan, srv) := Styxserver.new(fds[0], nav, Qroot);
 
-    # mount our server somewhere
-    if(sys->mount(fds[1], nil, mountpt, flags, nil) < 0)
-    {
-        sys->fprint(stderr, "dhtfs:fatal:mount failed: %r\n");
-        raise "fail:mount";
-    }
-
-    # start logfile
-    readychan := chan of int;
-    spawn startlogfile(mountpt + "/log", readychan);
-
-    <-readychan; # wait for logfile to start
-    logfile = sys->open(mountpt + "/log", Sys->OWRITE);
     # start dht
     fd := sys->open(bootstrapfile, Sys->OREAD);
     if (fd == nil)
@@ -213,7 +210,8 @@ init(nil: ref Draw->Context, args: list of string)
     }
     straplist := strapparse(string buf[:readbytes]);
 
-    local = dht->start(localaddr, straplist, Key.generate(), logfile);
+    # TODO: fix logfd - initial logging
+    local = dht->start(localaddr, straplist, Key.generate(), nil);
     if (local == nil)
     {
         sys->fprint(stderr, "dht:fatal:%r");
@@ -224,7 +222,6 @@ init(nil: ref Draw->Context, args: list of string)
     # create our file tree
     tree.create(Qroot, dir(".", Sys->DMDIR | 8r555, Qroot));
     tree.create(Qroot, dir("status",        8r764, Qstatus));
-    tree.create(Qroot, dir("bootstrap",     8r764, Qbootstrap));
     tree.create(Qroot, dir("findnode",      8r764, Qfindnode));
     tree.create(Qroot, dir("findvalue",     8r764, Qfindvalue));
     tree.create(Qroot, dir("store",         8r764, Qstore));
@@ -232,10 +229,83 @@ init(nil: ref Draw->Context, args: list of string)
     tree.create(Qroot, dir("stats",         8r764, Qstats));
     tree.create(Qroot, dir("localstore",    8r764, Qlocalstore));
     tree.create(Qroot, dir("contacts",      8r764, Qcontacts));
-    tree.create(Qnode, dir("node",      8r764, Qbootstrap));
+    tree.create(Qroot, dir("node",          8r764, Qnode));
 
     # start server message processing
     spawn serverloop(tchan, srv);
+
+    # mount our server somewhere
+    if(sys->mount(fds[1], nil, mountpt, flags, nil) < 0)
+    {
+        sys->fprint(stderr, "dhtfs:fatal:mount failed: %r\n");
+        raise "fail:mount";
+    }
+
+    # start logfile
+    readychan := chan of int;
+    spawn startlogfile(mountpt + "/log", readychan);
+
+    <-readychan; # wait for logfile to start
+    logfile := sys->open(mountpt + "/log", Sys->OWRITE);
+    local.setlogfd(logfile);
+}
+
+initwithdht(newlocal: ref Local, mountpt: string, flags: int, debug: int)
+{
+    loadmodules();
+    local = newlocal;
+
+    # setup a pipe
+    fds := array [2] of ref Sys->FD;
+    if(sys->pipe(fds) < 0)
+    {
+        sys->fprint(stderr, "dhtfs: can't create pipe: %r\n");
+        raise "fail:pipe";
+    }
+
+    # get some usefull things
+    user = getcuruser();
+    stderr = sys->fildes(2);
+
+    if (debug != 0)
+        styxservers->traceset(1);
+
+    # setup styx servers
+    navop: chan of ref Styxservers->Navop;
+    (tree, navop) = nametree->start();
+    nav = Navigator.new(navop);
+    (tchan, srv) := Styxserver.new(fds[0], nav, Qroot);
+
+    # TODO: fix permissions
+    # create our file tree
+    tree.create(Qroot, dir(".", Sys->DMDIR | 8r555, Qroot));
+    tree.create(Qroot, dir("status",        8r764, Qstatus));
+    tree.create(Qroot, dir("findnode",      8r764, Qfindnode));
+    tree.create(Qroot, dir("findvalue",     8r764, Qfindvalue));
+    tree.create(Qroot, dir("store",         8r764, Qstore));
+    tree.create(Qroot, dir("ping",          8r764, Qping));
+    tree.create(Qroot, dir("stats",         8r764, Qstats));
+    tree.create(Qroot, dir("localstore",    8r764, Qlocalstore));
+    tree.create(Qroot, dir("contacts",      8r764, Qcontacts));
+    tree.create(Qroot, dir("node",          8r764, Qnode));
+
+    # start server message processing
+    spawn serverloop(tchan, srv);
+
+    # mount our server somewhere
+    if(sys->mount(fds[1], nil, mountpt, flags, nil) < 0)
+    {
+        sys->fprint(stderr, "dhtfs:fatal:mount failed: %r\n");
+        raise "fail:mount";
+    }
+
+    # start logfile
+    readychan := chan of int;
+    spawn startlogfile(mountpt + "/log", readychan);
+
+    <-readychan; # wait for logfile to start
+    logfile := sys->open(mountpt + "/log", Sys->OWRITE);
+    local.setlogfd(logfile);
 }
 
 # parse bootstrap file

@@ -115,6 +115,10 @@ DirComp.gt(dc: self ref DirComp, d1, d2: ref Sys->Dir): int
 Cheshire: module {
     init: fn(nil: ref Draw->Context, argv: list of string);
 };
+Dhtfs: module {
+    PATH: con "/dis/dhtfs.dis";
+    initwithdht: fn(local: ref Local, mountpt: string, flags: int, debug: int);
+};
 DhtValue: adt {
     name: string;
     pick {
@@ -292,19 +296,25 @@ writestring(m: ref Tmsg.Write): (ref Rmsg.Write, string)
 
 startdht()
 {
-    dhtlogname := sys->sprint("/tmp/%ddhtlog.log", mainpid);
-    dhtlogfd = sys->create(dhtlogname, Sys->ORDWR, 8r700);
-    local = dht->start(localaddr, straplist, localkey, dhtlogfd);
+    local = dht->start(localaddr, straplist, localkey, nil);
     if (local == nil)
     {
         sys->fprint(stderr, "Very bad, dht init error: %r\n");
         raise sys->sprint("fail:dht:%r");
     }
-    if (dhtlogfd != nil)
-        sys->fprint(stderr, "Dht logging started\n");
     sys->fprint(stderr, "Dht started\n");
     local.usermsghandler = chan of (ref Dht->Tmsg.User);
     spawn dhtmsghandler();
+}
+
+startdhtfs()
+{
+    dhtfs := load Dhtfs Dhtfs->PATH;
+    if (dhtfs != nil)
+    {
+        dhtfs->initwithdht(local, mountedon + "/cheshire/", Sys->MAFTER, 0);
+        sys->fprint(stderr, "Dhtfs started\n");
+    }
 }
 
 init(nil: ref Draw->Context, args: list of string)
@@ -418,6 +428,15 @@ init(nil: ref Draw->Context, args: list of string)
     styxanswers = hashtable->new(HASHSIZE, rmsg);
 
     # starting message processing loop
+    spawn serverloop(tchan, srv, navops);
+
+    startdhtfs();
+}
+
+# Main cheshire message handling loop
+
+serverloop(tchan: chan of ref Styx->Tmsg, srv: ref Styxserver, navops: chan of ref Styxservers->Navop)
+{
     for (;;) {
         gm := <-tchan;
         if (gm == nil) {
@@ -431,8 +450,6 @@ init(nil: ref Draw->Context, args: list of string)
             srv.reply(r);
     }
 }
-
-# Main cheshire message handling loop
 
 handlemsg(gm: ref Styx->Tmsg, srv: ref Styxserver, nav: ref Navigator): ref Styx->Rmsg
 {
