@@ -1310,6 +1310,7 @@ Local.timer(l: self ref Local)
         # Server Keep-Alive and IP update
         if (curtime - l.serverlastseenalive > TKEEP_ALIVE)
         {
+            l.serverlastseenalive = curtime;
             msg := ref Tmsg.Observe(Key.generate(), l.node, l.node.srvid);
             srv := ref Node(l.node.srvid, l.node.srvaddr, l.node.srvaddr, 
                                           l.node.srvaddr, l.node.srvid);
@@ -1318,13 +1319,12 @@ Local.timer(l: self ref Local)
             {
                 l.changeserver();
                 l.dhtfindnode(l.node.id, nil);
+                continue;
             }
             observedaddr: string;
             pick m := ans {
                 Observe =>
                     observedaddr = m.observedaddr;
-                * =>
-                    l.logevent("timer", "fail:got unexpected message type!");
             }
             if (observedaddr != l.node.pubaddr)
             {
@@ -1656,37 +1656,46 @@ timer(ch: chan of int, timeout: int)
 Local.queryforrmsg(l: self ref Local, target: ref Node, msg: ref Tmsg, callroutine: string): (int, ref Rmsg) 
 # (rtt, answer)
 {
-    ch := l.sendtmsg(target, msg);
-    sendtime := sys->millisec();
-    killerch := chan of int;
-    spawn timer(killerch, WAIT_TIME);
+    for (i := 0; i < MAXRETRANSMIT; i++)
+    {
+        ch := l.sendtmsg(target, msg);
+        sendtime := sys->millisec();
+        killerch := chan of int;
+        spawn timer(killerch, WAIT_TIME);
 
-    answer: ref Rmsg;
-    rtt := QTimeOut;
-    alt {
-        answer = <-ch =>
-            spawn timerreaper(killerch);
-            if (tagof msg != tagof answer)
-            {
-                l.logevent(callroutine, "Received answer, but not the desired message format");
+        stop := 0;
+        answer: ref Rmsg;
+        rtt := QTimeOut;
+        alt {
+            answer = <-ch =>
+                spawn timerreaper(killerch);
+                if (tagof msg != tagof answer)
+                {
+                    l.logevent(callroutine, "Received answer, but not the desired message format");
+                    answer = nil;
+                    break;
+                }
+                if (!answer.senderid.eq(target.id))
+                {
+                    l.logevent(callroutine, "Received answer from unexpected node");
+                    answer = nil;
+                    break;
+                }
+                rtt = sys->millisec() - sendtime;
+                l.stats.totalrtt += rtt;
+                l.stats.answersgot++;
+                stop = 1;
+            <-killerch =>
+                l.logevent(callroutine, "Waiting timeout");
                 answer = nil;
-                break;
-            }
-            if (!answer.senderid.eq(target.id))
-            {
-                l.logevent(callroutine, "Received answer from unexpected node");
-                answer = nil;
-                break;
-            }
-            rtt = sys->millisec() - sendtime;
-            l.stats.totalrtt += rtt;
-            l.stats.answersgot++;
-        <-killerch =>
-            l.logevent(callroutine, "Waiting timeout");
-            answer = nil;
+        }
+        l.callbacksch <-= (QRemoveCallback, msg.uid.text(), nil);
+        if (stop == 1)
+            return (rtt, answer);
     }
-    l.callbacksch <-= (QRemoveCallback, msg.uid.text(), nil);
-    return (rtt, answer);
+    l.stats.unanswerednodes++;
+    l.logevent(callroutine, "After " + string MAXRETRANSMIT + " attempts send failed");
+    return (QTimeOut, nil);
 }
 Local.dhtping(l: self ref Local, id: Key): int
 {
@@ -1739,7 +1748,6 @@ replacefirstnode(c: ref Contacts, toadd: ref Node, pingnode: ref Node, msg: ref 
     if (reply == nil || rtt < 0)
     {
         #fail
-        c.local.stats.unanswerednodes++;
         c.local.logevent("replacefirstnode", "Answer not received, killing node");
         c.local.contactsch <-= (QRemoveContact, ref Node(pingnode.id, "", "", "", Key.generate()));
         c.local.contactsch <-= (QAddContact, toadd);
