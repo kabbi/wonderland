@@ -38,10 +38,7 @@ Logfile: module {
 
 Qroot: con big 16rfffffff;
 Qfindnode, Qfindvalue, Qstore, Qping, Qstats, Qstatus, 
-Qlocalstore, Qcontacts, Qstart, Qbootstrap, Qnode: con big iota + big 16r42;
-dhtstarted := 0;
-bootstrapfile, localaddr: string;
-logfile: ref Sys->FD;
+Qlocalstore, Qcontacts, Qbootstrap, Qnode: con big iota + big 16r42;
 tree: ref Tree;
 nav: ref Navigator;
 logfilepid: int;
@@ -60,6 +57,51 @@ usage()
 {
     sys->fprint(stderr, "Usage: dhtfs [-a|-b|-ac|-bc] [-D] addr bootstrapfile mountpoint\n");
     raise "fail:usage";
+}
+
+msgnames := array [] of {
+    "TPing", "RPing",
+    "TStore", "RStore",
+    "TFindValue", "RFindValue",
+    "TFindNode", "RFindNode",
+    "TAskRandezvous", "RAskRandezvous",
+    "TInvitation", "RInvitation",
+    "TObserve", "RObserve",
+    "TUser", "RUser"
+};
+
+getstats(local: ref Local): string
+{
+    stats := local.stats;
+    ret: string;
+    ret += sys->sprint("Startup time: %s\n", daytime->text(daytime->local(stats.startuptime)));
+    ret += sys->sprint("Number of sent Tmsgs: %d\n", stats.senttmsgs);
+    ret += sys->sprint("Number of sent Rmsgs: %d\n", stats.sentrmsgs);
+    ret += sys->sprint("Number of received Tmsgs: %d\n", stats.recvdtmsgs);
+    ret += sys->sprint("Number of received Rmsgs: %d\n", stats.recvdrmsgs);
+    ret += sys->sprint("Incoming msgs processing errors: %d\n", stats.processerrors);
+    ret += sys->sprint("Send error count: %d\n", stats.senderrors);
+    ret += sys->sprint("Sent msgs by type:\n");
+    for (i := 0; i < Dht->Tmax - 100; i++)
+        ret += sys->sprint("\t%s\t%d\n", msgnames[i], stats.sentmsgsbytype[i]);
+    ret += sys->sprint("Received msgs by type:\n");
+    for (i = 0; i < Dht->Tmax - 100; i++)
+        ret += sys->sprint("\t%s\t%d\n", msgnames[i], stats.recvmsgsbytype[i]);
+    ret += sys->sprint("API calls:\n");
+    ret += sys->sprint("\tfindvalue\t%d\n", stats.findvaluecalled);
+    ret += sys->sprint("\tfindnode\t%d\n", stats.findnodecalled);
+    ret += sys->sprint("\tstore\t%d\n", stats.storecalled);
+    ret += sys->sprint("\tping\t%d\n", stats.pingcalled);
+    if (stats.answersgot == 0)
+        ret += sys->sprint("Average rtt: n/a\n");
+    else
+        ret += sys->sprint("Average rtt: %f\n", real stats.totalrtt / real stats.answersgot);
+    ret += sys->sprint("Answers got: %d\n", stats.answersgot);
+    ret += sys->sprint("Store entries expired: %d\n", stats.expiredentries);
+    ret += sys->sprint("Unanswered nodes: %d\n", stats.unanswerednodes);
+    ret += sys->sprint("Bucket overflowed: %d\n", stats.bucketoverflows);
+    ret += sys->sprint("Emitted log entries: %d\n", stats.logentries);
+    return ret;
 }
 
 init(nil: ref Draw->Context, args: list of string)
@@ -101,6 +143,8 @@ init(nil: ref Draw->Context, args: list of string)
         raise "fail:pipe";
     }
 
+    bootstrapfile, localaddr: string;
+    logfile: ref Sys->FD;
     # get some usefull things
     user = getcuruser();
     stderr = sys->fildes(2);
@@ -130,7 +174,9 @@ init(nil: ref Draw->Context, args: list of string)
     localaddr = hd args;
     args = tl args;
     mountpt := hd args;
-    bootstrapfile = mountpt + "/bootstrap";
+    args = tl args;
+    bootstrapfile = hd args;
+    args = tl args;
 
     # setup styx servers
     navop: chan of ref Styxservers->Navop;
@@ -138,20 +184,10 @@ init(nil: ref Draw->Context, args: list of string)
     nav = Navigator.new(navop);
     (tchan, srv) := Styxserver.new(fds[0], nav, Qroot);
 
-    # TODO: fix permissions
-    # create our file tree
-    tree.create(Qroot, dir(".", Sys->DMDIR | 8r555, Qroot));
-    tree.create(Qroot, dir("status",        8r764, Qstatus));
-    tree.create(Qroot, dir("start",         8r764, Qstart));
-    tree.create(Qroot, dir("bootstrap",     8r764, Qbootstrap));
-
-    # start server message processing
-    spawn serverloop(tchan, srv);
-
     # mount our server somewhere
     if(sys->mount(fds[1], nil, mountpt, flags, nil) < 0)
     {
-        sys->fprint(stderr, "dhtfs: mount failed: %r\n");
+        sys->fprint(stderr, "dhtfs:fatal:mount failed: %r\n");
         raise "fail:mount";
     }
 
@@ -161,6 +197,45 @@ init(nil: ref Draw->Context, args: list of string)
 
     <-readychan; # wait for logfile to start
     logfile = sys->open(mountpt + "/log", Sys->OWRITE);
+    # start dht
+    fd := sys->open(bootstrapfile, Sys->OREAD);
+    if (fd == nil)
+    {
+        sys->fprint(stderr, "dhtfs:fatal:bootstrap file not found");
+        raise "fail:bootstrap file not found"; 
+    }
+    buf := array [8192] of byte;
+    readbytes := sys->read(fd, buf, len buf);
+    if (readbytes < 0)
+    {
+        sys->fprint(stderr, "dhtfs:fatal:bootstrap file io error");
+        raise "fail:bootstrap file io error";
+    }
+    straplist := strapparse(string buf[:readbytes]);
+
+    local = dht->start(localaddr, straplist, Key.generate(), logfile);
+    if (local == nil)
+    {
+        sys->fprint(stderr, "dht:fatal:%r");
+        raise sys->sprint("fail:dht:%r");
+    }
+
+    # TODO: fix permissions
+    # create our file tree
+    tree.create(Qroot, dir(".", Sys->DMDIR | 8r555, Qroot));
+    tree.create(Qroot, dir("status",        8r764, Qstatus));
+    tree.create(Qroot, dir("bootstrap",     8r764, Qbootstrap));
+    tree.create(Qroot, dir("findnode",      8r764, Qfindnode));
+    tree.create(Qroot, dir("findvalue",     8r764, Qfindvalue));
+    tree.create(Qroot, dir("store",         8r764, Qstore));
+    tree.create(Qroot, dir("ping",          8r764, Qping));
+    tree.create(Qroot, dir("stats",         8r764, Qstats));
+    tree.create(Qroot, dir("localstore",    8r764, Qlocalstore));
+    tree.create(Qroot, dir("contacts",      8r764, Qcontacts));
+    tree.create(Qnode, dir("node",      8r764, Qbootstrap));
+
+    # start server message processing
+    spawn serverloop(tchan, srv);
 }
 
 # parse bootstrap file
@@ -226,13 +301,9 @@ handlemsg(gm: ref Styx->Tmsg, srv: ref Styxserver, nil: ref Tree): string
         answer := "you haven't asked a question. 42";
         case fid.path {
             Qstatus =>
-                # TODO: Make it more informative
-                if (!dhtstarted)
-                    answer = "Dht not started";
-                else
-                    answer = "Dht started";
+                answer = "Here'll come status report";
             Qstats =>
-                answer = "dht statistics";
+                answer = getstats(local);
             Qlocalstore =>
                 answer = storetext(local.store);
             Qnode =>
@@ -255,44 +326,6 @@ handlemsg(gm: ref Styx->Tmsg, srv: ref Styxserver, nil: ref Tree): string
         {
             result := "";
             case fid.path {
-                Qbootstrap =>
-                    result = string m.data;
-                Qstart =>
-                    # start dht
-                    fd := sys->open(bootstrapfile, Sys->OREAD);
-                    if (fd == nil)
-                    {
-                        fid.data = array of byte "fail:bootstrap file not found";
-                        break;
-                    }
-                    buf := array [8192] of byte;
-                    readbytes := sys->read(fd, buf, len buf);
-                    if (readbytes < 0)
-                    {
-                        fid.data = array of byte "fail:bootstrap file io error";
-                        break;
-                    }
-                    straplist := strapparse(string buf[:readbytes]);
-
-                    local = dht->start(localaddr, straplist, Key.generate(), logfile);
-                    if (local == nil)
-                    {
-                        fid.data = array of byte sys->sprint("fail:dht:%r");
-                        break;
-                    }
-                    fid.data = array of byte sys->sprint("Dht started!\n");
-                    tree.remove(Qstart);
-                    tree.remove(Qbootstrap);
-                    tree.create(Qroot, dir("findnode",      8r764, Qfindnode));
-                    tree.create(Qroot, dir("findvalue",     8r764, Qfindvalue));
-                    tree.create(Qroot, dir("store",         8r764, Qstore));
-                    tree.create(Qroot, dir("ping",          8r764, Qping));
-                    tree.create(Qroot, dir("stats",         8r764, Qstats));
-                    tree.create(Qroot, dir("localstore",    8r764, Qlocalstore));
-                    tree.create(Qroot, dir("contacts",      8r764, Qcontacts));
-                    tree.create(Qnode, dir("node",      8r764, Qbootstrap));
-                    # TODO: Change the dht model to allow it's existance in default state? (e.g. without starting)
-                    dhtstarted = 1;
                 Qfindnode =>
                     key := Key.parse(string m.data);
                     if (key == nil)
