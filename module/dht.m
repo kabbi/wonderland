@@ -59,12 +59,12 @@ Dht: module
     FVMax: con iota;
 
     # Store result codes
-    SSuccess,
-    SFail: con iota;
+    SFail,
+    SSuccess: con iota;
 
     # AskRandezvous result codes
-    RSuccess,
-    RFail: con iota;
+    RFail,
+    RSuccess: con iota;
 
     # Callbacks channel actions
     QAddCallback,

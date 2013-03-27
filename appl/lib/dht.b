@@ -1306,7 +1306,6 @@ Local.timer(l: self ref Local)
             }
         }
 
-        #TRAVERSE TODO: Server Keep-Alive
         # Server Keep-Alive and IP update
         if (curtime - l.serverlastseenalive > TKEEP_ALIVE)
         {
@@ -1376,8 +1375,7 @@ Local.storeproc(l: self ref Local)
         {
             items := table.find(key);
             if (items == nil || lists->find(item, items) == nil)
-                continue;
-            newitemlist := lists->delete(item, items);
+                continue; newitemlist := lists->delete(item, items);
             table.delete(key);
             if (len newitemlist > 0)
                 table.insert(key, newitemlist);
@@ -1399,11 +1397,11 @@ Local.storeproc(l: self ref Local)
 }
 Local.sendmsg(l: self ref Local, addr: string, data: array of byte)
 {
-    # TODO: catch errors
     buffer := array [len data + Udp4hdrlen] of byte;
 
     hdr := Udphdr.new();
     (hdr.laddr, hdr.lport) = l.localaddr;
+    # TODO: catch errors
     (hdr.raddr, hdr.rport) = dialparse(addr);
     hdr.pack(buffer, Udp4hdrlen);
 
@@ -1424,19 +1422,6 @@ Local.sendtmsg(l: self ref Local, n: ref Node, msg: ref Tmsg): chan of ref Rmsg
         ch := chan of ref Rmsg;
         l.callbacksch <-= (QAddCallback, msg.uid.text(), ch);
         return ch;
-    }
-    # TRAVERSE TODO: do it somewhere else in reaction to message wait timeout?
-    if (n.pubaddr != n.prvaddr && l.contacts.getnode(n.id) == nil)  
-    # TRAVERSE TODO Quite bad, it could still be unreachable even if in contacts
-    {
-        l.logevent("sendtmsg", sys->sprint("Trying to establish randezvous at: %s", n.srvaddr));
-        isdirect := l.askrandezvous(n.pubaddr, n.srvaddr, n.id, n.srvid);
-        if (isdirect)
-        {
-            # Here and below, do not throw anything by now
-            l.logevent("sendtmsg", sys->sprint("Traverse error: unable to establish randezvous"));
-            #raise sys->sprint("fail:sendtmsg:send error:%r");
-        }
     }
     l.stats.senttmsgs++;
     l.stats.sentmsgsbytype[ttag2type[tagof msg] - 100]++;
@@ -1656,7 +1641,7 @@ timer(ch: chan of int, timeout: int)
 Local.queryforrmsg(l: self ref Local, target: ref Node, msg: ref Tmsg, callroutine: string): (int, ref Rmsg) 
 # (rtt, answer)
 {
-    for (i := 0; i < MAXRETRANSMIT; i++)
+    for (i := 0; i < MAXRETRANSMIT + 1; i++)
     {
         ch := l.sendtmsg(target, msg);
         sendtime := sys->millisec();
@@ -1692,6 +1677,13 @@ Local.queryforrmsg(l: self ref Local, target: ref Node, msg: ref Tmsg, callrouti
         l.callbacksch <-= (QRemoveCallback, msg.uid.text(), nil);
         if (stop == 1)
             return (rtt, answer);
+        else if (i < MAXRETRANSMIT)
+        {
+            l.logevent(callroutine, sys->sprint("Direct connect failed, trying to establish randezvous at: %s", target.srvaddr));
+            isdirect := l.askrandezvous(target.pubaddr, target.srvaddr, target.id, target.srvid);
+            if (isdirect != RSuccess)
+                l.logevent(callroutine, sys->sprint("fail:Seems that randezvous failed"));
+        }
     }
     l.stats.unanswerednodes++;
     l.logevent(callroutine, "After " + string MAXRETRANSMIT + " attempts send failed");
@@ -1857,10 +1849,11 @@ start(localaddr: string, bootstrap: array of ref Node, id: Key, logfd: ref Sys->
         server.node.pubaddr = localaddr;
     }
 
+    for (i = 0; i < len bootstrap; ++i)
+        contactsch <-= (QAddContact, bootstrap[i]);
     server.serverlastseenalive = daytime->now();
     spawn server.timer();
 
-    # TODO: Add servers to buckets?
     server.dhtfindnode(id, bootstrap);
 
     return server;
