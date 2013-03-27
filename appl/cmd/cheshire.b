@@ -31,6 +31,7 @@ include "hashtable.m";
 include "dht.m";
     dht: Dht;
     Node, Local, StoreItem: import dht;
+    MAXRETRANSMIT: import Dht;
 include "sort.m";
     sort: Sort;
 
@@ -743,7 +744,7 @@ remotemounter(servnode: ref Node, styxservid: Key, servfd: ref Sys->FD)
         dhtmsg := ref (Dht->Tmsg).User(Key.generate(), local.node, servnode.id, msg);
         sys->fprint(stderr, "Message sent to server: %s\n", styxservid.text());
         sys->fprint(stderr, "Awaiting response\n");
-        (rtt, reply) := local.queryforrmsg(servnode, dhtmsg, "cheshire:remotemounter");
+        (rtt, reply) := local.queryforrmsg(servnode, dhtmsg, MAXRETRANSMIT, "cheshire:remotemounter");
         if (reply != nil)
             pick r := reply {
                 User =>
