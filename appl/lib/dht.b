@@ -1313,7 +1313,7 @@ Local.timer(l: self ref Local)
             msg := ref Tmsg.Observe(Key.generate(), l.node, l.node.srvid);
             srv := ref Node(l.node.srvid, l.node.srvaddr, l.node.srvaddr, 
                                           l.node.srvaddr, l.node.srvid);
-            (success, ans) := l.queryforrmsg(srv, msg, "timer");
+            (success, ans) := l.queryforrmsg(srv, msg, MAXRETRANSMIT, "timer");
             if (success  <= 0 || ans == nil)
             {
                 l.changeserver();
@@ -1638,10 +1638,10 @@ timer(ch: chan of int, timeout: int)
     sys->sleep(timeout);
     ch <-= 1;
 }
-Local.queryforrmsg(l: self ref Local, target: ref Node, msg: ref Tmsg, callroutine: string): (int, ref Rmsg) 
+Local.queryforrmsg(l: self ref Local, target: ref Node, msg: ref Tmsg, retransmits: int, callroutine: string): (int, ref Rmsg) 
 # (rtt, answer)
 {
-    for (i := 0; i < MAXRETRANSMIT + 1; i++)
+    for (i := 0; i < retransmits + 1; i++)
     {
         ch := l.sendtmsg(target, msg);
         sendtime := sys->millisec();
@@ -1677,8 +1677,9 @@ Local.queryforrmsg(l: self ref Local, target: ref Node, msg: ref Tmsg, callrouti
         l.callbacksch <-= (QRemoveCallback, msg.uid.text(), nil);
         if (stop == 1)
             return (rtt, answer);
-        else if (i < MAXRETRANSMIT)
+        else if (i < retransmits && !ispublic(target))
         {
+            # TODO: Make it async?
             l.logevent(callroutine, sys->sprint("Direct connect failed, trying to establish randezvous at: %s", target.srvaddr));
             isdirect := l.askrandezvous(target.pubaddr, target.srvaddr, target.id, target.srvid);
             if (isdirect != RSuccess)
@@ -1698,7 +1699,7 @@ Local.dhtping(l: self ref Local, id: Key): int
 
     l.logevent("dhtping", "Dht ping called with " + id.text());
     msg := ref Tmsg.Ping(Key.generate(), l.node, id);
-    (rtt, reply) := l.queryforrmsg(node, msg, "dhtping");
+    (rtt, reply) := l.queryforrmsg(node, msg, MAXRETRANSMIT, "dhtping");
     return rtt;
 }
 Local.processrandezvousquery(l: self ref Local, m: ref Tmsg.AskRandezvous, askingnode: ref Node)
@@ -1708,7 +1709,7 @@ Local.processrandezvousquery(l: self ref Local, m: ref Tmsg.AskRandezvous, askin
                                                   askingnode.prvaddr, askingnode.pubaddr, askingnode.id);
     askednode := ref Node(m.oppid, m.addr, m.addr, m.addr, Key.generate());
     result := RFail;
-    (rtt, reply) := l.queryforrmsg(askednode, invitation, "processrandezvous");
+    (rtt, reply) := l.queryforrmsg(askednode, invitation, 1, "processrandezvous");
     if (reply != nil)
         pick r := reply {
             Invitation =>
@@ -1724,7 +1725,7 @@ Local.askrandezvous(l: self ref Local, nodeaddr, srvaddr: string, nodeid, srvid:
     l.logevent("askrandezvous", "Asking " + srvaddr + " for randezvous with " + nodeaddr + ".");
     askrandezvous := ref Tmsg.AskRandezvous(Key.generate(), l.node, srvid, nodeid, nodeaddr);
     server := ref Node(srvid, srvaddr, srvaddr, srvaddr, srvid);
-    (rtt, reply) := l.queryforrmsg(server, askrandezvous, "askrandezvous");
+    (rtt, reply) := l.queryforrmsg(server, askrandezvous, 1, "askrandezvous");
     result := RFail;
     if (reply != nil)
         pick r := reply {
@@ -1736,7 +1737,7 @@ Local.askrandezvous(l: self ref Local, nodeaddr, srvaddr: string, nodeid, srvid:
 replacefirstnode(c: ref Contacts, toadd: ref Node, pingnode: ref Node, msg: ref Tmsg)
 {
     c.local.stats.bucketoverflows++;
-    (rtt, reply) := c.local.queryforrmsg(pingnode, msg, "replacefirstnode");
+    (rtt, reply) := c.local.queryforrmsg(pingnode, msg, MAXRETRANSMIT, "replacefirstnode");
     if (reply == nil || rtt < 0)
     {
         #fail
@@ -1760,7 +1761,7 @@ findnode(l: ref Local, targetnode: ref Node, uid: Key, rch: chan of ref Rmsg, re
     else
         msg = ref Tmsg.FindNode(Key.generate(), l.node, targetnode.id, uid);
     answer: ref Rmsg;
-    (rtt, reply) := l.queryforrmsg(targetnode, msg, "findnode");
+    (rtt, reply) := l.queryforrmsg(targetnode, msg, MAXRETRANSMIT, "findnode");
     rch <-= reply;
 }
 store(l: ref Local, where: ref Node, key: Key, value: ref StoreItem)
@@ -1768,7 +1769,7 @@ store(l: ref Local, where: ref Node, key: Key, value: ref StoreItem)
     l.logevent("store", "Store called with key " + key.text());
     l.logevent("store", "Storing to  " + where.text());
     msg := ref Tmsg.Store(Key.generate(), l.node, where.id, key, value);
-    (rtt, reply) := l.queryforrmsg(where, msg, "store");
+    (rtt, reply) := l.queryforrmsg(where, msg, MAXRETRANSMIT, "store");
     result := SFail;
     if (reply != nil)
         pick r := reply {
@@ -1825,7 +1826,7 @@ start(localaddr: string, bootstrap: array of ref Node, id: Key, logfd: ref Sys->
         server.node.srvaddr = bootstrap[i].pubaddr;
         server.node.srvid = bootstrap[i].id;
         msg := ref Tmsg.Observe(Key.generate(), node, bootstrap[i].id);
-        (rtt, reply) := server.queryforrmsg(bootstrap[i], msg, "start");
+        (rtt, reply) := server.queryforrmsg(bootstrap[i], msg, MAXRETRANSMIT, "start");
         if (reply != nil)
             pick r := reply {
                 Observe =>

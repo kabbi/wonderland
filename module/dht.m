@@ -27,7 +27,7 @@ Dht: module
     RANDOMNESS:     con 1000;   # 1000
     WAIT_TIME:      con 1000;   # 2000
     TKEEP_ALIVE:    con 10000;  # ?
-    MAXRETRANSMIT:  con 3;
+    MAXRETRANSMIT:  con 5;
 
     # DHT messages
     TPing,          # 100
@@ -278,7 +278,7 @@ Dht: module
         # NAT traversing related methods
         processrandezvousquery: fn(nil: self ref Local, m: ref Tmsg.AskRandezvous, askingnode: ref Node);
         askrandezvous: fn(nil: self ref Local, nodeaddr, srvaddr: string, nodeid, srvid: Key): int;
-        queryforrmsg: fn(nil: self ref Local, node: ref Node, msg: ref Tmsg, callroutine: string): (int, ref Rmsg);
+        queryforrmsg: fn(nil: self ref Local, node: ref Node, msg: ref Tmsg, retransmits: int, callroutine: string): (int, ref Rmsg);
         changeserver: fn(nil: self ref Local);
     };
 
