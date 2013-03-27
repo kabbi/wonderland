@@ -35,6 +35,13 @@ badmodule(p: string)
 
 local: ref Local;
 
+abs(a: int): int
+{
+    if (a < 0) 
+        a *= -1;
+    return a;
+}
+
 arreq(a1, a2: array of byte): int
 {
     if (len a1 != len a2)
@@ -52,6 +59,13 @@ dist(k1, k2: Key): Key
     for (i := 0; i < BB; i++)
         r.data[i] ^= k2.data[i];
     return r;
+}
+
+kill(pid: int, how: string)
+{
+    fd := sys->open("#p/"+(string pid)+"/ctl", sys->OWRITE);
+    if(fd != nil)
+        sys->fprint(fd, "%s", how);
 }
 
 initlocal(addr: string, verbose: int, bootstrap: ref Node): ref Local
@@ -683,16 +697,29 @@ interactivetest(addr: string, bootstrap: ref Node)
                     local.contacts.removecontact(*key);
                     sys->print("Node with key %s removed!\n", (*key).text());
                 "ping" =>
-                    if (tl args == nil)
+                    args = tl args;
+                    if (args == nil)
                         raise "fail:bad args";
-                    key := Key.parse(hd (tl args));
+                    key := Key.parse(hd args);
                     if (key == nil)
                         raise "fail:bad key";
-                    rtt := local.dhtping(*key);
-                    if (rtt > 0)
-                        sys->print("Ping success!\nGot answer in %d ms\n", rtt);
-                    else
-                        sys->print("No answer!\n");
+                    args = tl args;
+                    count := 1;
+                    if (args != nil)
+                        count = int hd args;
+                    received := 0;
+                    for (i := 0; i < count; i++)
+                    {
+                        rtt := local.dhtping(*key);
+                        if (rtt > 0)
+                        {
+                            sys->print("Ping success!\nGot answer in %d ms\n", rtt);
+                            received++;
+                        }
+                        else
+                            sys->print("No answer!\n");
+                    }
+                    sys->print("Ping results: sent %d, received %d\n", count, received);
                 "chaddr" =>
                     if (tl args == nil)
                         raise "fail:bad args";

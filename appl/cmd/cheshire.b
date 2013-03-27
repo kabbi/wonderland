@@ -656,7 +656,7 @@ dhtmsghandler()
         styxservid := Key(msg.data[:Bigkey->BB]);
         msgdata := msg.data[Bigkey->BB:];
         # firstly clone the server for the client, if it's his first message
-        # TODO: why pubaddr? we deserve better address
+        # TODO: why pubaddr? change to node id
         clientfd := styxclients.find(msg.sender.pubaddr);
         if (clientfd == nil)
         {
@@ -740,7 +740,7 @@ remotemounter(servnode: ref Node, styxservid: Key, servfd: ref Sys->FD)
             }
         else
         {
-            answer := ref Rmsg.Error(m.tag, "Dht traverse error: message wait timeout");
+            answer := ref Rmsg.Error(m.tag, "styx error: message wait timeout");
             packedanswer := answer.pack();
             sys->write(servfd, packedanswer, len packedanswer);
         }
