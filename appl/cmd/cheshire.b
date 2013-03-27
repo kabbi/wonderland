@@ -413,7 +413,7 @@ init(nil: ref Draw->Context, args: list of string)
     mountpoints = hashtable->new(HASHSIZE, "");
     runningstyxservers = hashtable->new(HASHSIZE, stderr);
     styxclients = hashtable->new(HASHSIZE, stderr);
-    rmsg: ref Rmsg;
+    rmsg: ref (Dht->Rmsg).User;
     styxanswers = hashtable->new(HASHSIZE, rmsg);
 
     # starting message processing loop
@@ -642,7 +642,7 @@ synthnavigator(op: ref styxservers->Navop): int
 # Cheshire styx server handling, common functions
 
 styxclients: ref Hashtable->HashTable[ref Sys->FD];     # key - node id, value - server fd
-styxanswers: ref Hashtable->HashTable[ref Rmsg];        # key - node id, value - last sent answer for this client
+styxanswers: ref Hashtable->HashTable[ref (Dht->Rmsg).User];        # key - node id, value - last sent answer for this client
 
 dhtmsghandler()
 {
@@ -656,10 +656,11 @@ dhtmsghandler()
             sys->fprint(stderr, "Message too short, ignored\n");
             continue;
         }
+        clientid := msg.sender.id.text();
         styxservid := Key(msg.data[:Bigkey->BB]);
         msgdata := msg.data[Bigkey->BB:];
         # firstly clone the server for the client, if it's his first message
-        clientfd := styxclients.find(msg.sender.id.text());
+        clientfd := styxclients.find(clientid);
         if (clientfd == nil)
         {
             styxservfd := runningstyxservers.find(styxservid.text());
@@ -670,35 +671,31 @@ dhtmsghandler()
             }
             sys->fprint(stderr, "Cloning server for this client\n");
             clientfd = cloneserver(styxservfd);
-            styxclients.insert(msg.sender.id.text(), clientfd);
+            styxclients.insert(clientid, clientfd);
         }
         # check if we already have an answer
-        answer := styxanswers.find(msg.sender.id.text());
+        answer := styxanswers.find(clientid);
         if (answer != nil)
         {
             # if we already have the answer with the same tag, reply with it
-            (l, m) := Tmsg.unpack(msgdata);
-            if (m != nil && m.tag == answer.tag)
+            if (answer.uid.eq(msg.uid))
             {
-                local.sendrmsg(msg.sender.prvaddr, msg.sender.pubaddr,
-                    ref (Dht->Rmsg).User(msg.uid, local.node.id, msg.sender.id, answer.pack()));
+                local.sendrmsg(msg.sender.prvaddr, msg.sender.pubaddr, answer);
                 sys->fprint(stderr, "Answered with stored result\n");
                 continue;
             }
-            styxanswers.delete(msg.sender.id.text());
+            styxanswers.delete(clientid);
         }
         # if ok, pass the data to styxserver
         sys->fprint(stderr, "Passing packet to styxserver\n");
         buf := array [Styx->MAXRPC] of byte;
         sys->write(clientfd, msgdata, len msgdata);
         readbytes := sys->read(clientfd, buf, len buf);
-        # store the answer to reply with it in case of retransmits
-        (l, m) := Rmsg.unpack(buf);
-        if (m != nil)
-            styxanswers.insert(msg.sender.id.text(), m);
+        answer = ref (Dht->Rmsg).User(msg.uid, local.node.id, msg.sender.id, buf[:readbytes]);
         # wrap with dht message and return to caller
-        local.sendrmsg(msg.sender.prvaddr, msg.sender.pubaddr,
-            ref (Dht->Rmsg).User(msg.uid, local.node.id, msg.sender.id, buf[:readbytes]));
+        local.sendrmsg(msg.sender.prvaddr, msg.sender.pubaddr, answer);
+        # store the answer to reply with it in case of retransmits
+        styxanswers.insert(clientid, answer);
         sys->fprint(stderr, "Answered\n");
     }
 }
