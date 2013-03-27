@@ -134,6 +134,11 @@ dialparse(addr: string): (IPaddr, int)
     parts = tl parts;
     return (ipaddr, int hd parts);
 }
+ispublic(n: ref Node): int
+{
+    # GLOBAL TRAVERSE TODO: "Openness" of the node problem. Should be discovered by the net.
+    return n.pubaddr == n.prvaddr;
+}
 swap(a, b: ref Node)
 {
     t := a;
@@ -855,6 +860,7 @@ Bucket.isinrange(b: self ref Bucket, id: Key): int
 }
 Bucket.addnode(b: self ref Bucket, n: ref Node): int
 {
+    #TODO: Rewrite with lists!
     if (len b.nodes >= K)
         return EBucketFull;
     if (b.findnode(n.id) != -1)
@@ -902,7 +908,6 @@ Contacts.addcontact(c: self ref Contacts, n: ref Node)
     c.local.logevent("addcontact", "Adding contact " + n.text());
 
     bucketInd := c.findbucket(n.id);
-    #TODO: Update lastaccess time?
     case c.buckets[bucketInd].addnode(n)
     {
         * =>
@@ -931,7 +936,6 @@ Contacts.addcontact(c: self ref Contacts, n: ref Node)
 Contacts.split(c: self ref Contacts, idx: int)
 {
     c.local.logevent("split", "Splitting bucket " + string idx);
-    #TODO: Update lastaccess time?
     src := c.buckets[idx];
     mid := src.maxrange.subtract(src.maxrange.subtract(src.minrange).halve()); # m = r - ((r - l) / 2)
     l := ref Bucket(array [0] of Node, src.minrange, mid, src.lastaccess);
@@ -1039,6 +1043,29 @@ Contacts.findclosenodes(c: self ref Contacts, id: Key): array of Node
     }
     c.local.logevent("findclosenodes", "Returned " + string len nodes + " nodes");
     return nodes;
+}
+Contacts.getpublicnodes(c: self ref Contacts): array of ref Node
+{
+    #TODO: Keep track of pulic nodes, do not go through whole list
+    b := c.buckets; #Damn, it still allows races! #$%!&!, Damned refs!
+    count := 0;
+    for (i := 0; i < len b; ++i)
+    {
+        curbucket := b[i].nodes;
+        for (j := 0; j < len curbucket; ++j)
+            if (ispublic(ref curbucket[j]))
+                ++count;
+    }
+    l := array [count] of ref Node;
+    count = 0;
+    for (i = 0; i < len b; ++i)
+    {
+        curbucket := b[i].nodes;
+        for (j := 0; j < len curbucket; ++j)
+            if (ispublic(ref curbucket[j]))
+                l[count++] = ref curbucket[j];
+    }
+    return l;
 }
 Contacts.text(c: self ref Contacts, tabs: int): string
 {
@@ -1195,11 +1222,27 @@ Local.processrmsg(l: self ref Local, buf: array of byte)
             l.logevent("precessrmsg", "Exception cought while processing Rmsg: " + e);
     }
 }
+Local.changeserver(l: self ref Local)
+{
+    availableservers := l.contacts.getpublicnodes();
+    if (len availableservers == 0)
+        return;
+    ind := abs(random->randomint(random->NotQuiteRandom) % len availableservers);
+    newserver := availableservers[ind];
+    if (newserver.id.eq(l.node.srvid))
+    {
+        ind++;
+        ind %= len availableservers;
+        newserver = availableservers[ind];
+    }
+    # TODO: A little race here
+    l.node.srvid = newserver.id;
+    l.node.srvaddr = newserver.pubaddr;
+}
 Local.timer(l: self ref Local)
 {
     l.timerpid = sys->pctl(0, nil);
 
-    #TRAVERSE TODO: Server Keep-Alive
     while (1)
     {
         sys->sleep(1000);
@@ -1260,6 +1303,33 @@ Local.timer(l: self ref Local)
                     item.lastupdate = daytime->now();
                     storehelper(l, key, item);       
                 }
+            }
+        }
+
+        #TRAVERSE TODO: Server Keep-Alive
+        # Server Keep-Alive and IP update
+        if (curtime - l.serverlastseenalive > TKEEP_ALIVE)
+        {
+            msg := ref Tmsg.Observe(Key.generate(), l.node, l.node.srvid);
+            srv := ref Node(l.node.srvid, l.node.srvaddr, l.node.srvaddr, 
+                                          l.node.srvaddr, l.node.srvid);
+            (success, ans) := l.queryforrmsg(srv, msg, "timer");
+            if (success  <= 0 || ans == nil)
+            {
+                l.changeserver();
+                l.dhtfindnode(l.node.id, nil);
+            }
+            observedaddr: string;
+            pick m := ans {
+                Observe =>
+                    observedaddr = m.observedaddr;
+                * =>
+                    l.logevent("timer", "fail:got unexpected message type!");
+            }
+            if (observedaddr != l.node.pubaddr)
+            {
+                l.node.pubaddr = observedaddr;
+                l.dhtfindnode(l.node.id, nil);
             }
         }
     }
@@ -1583,13 +1653,13 @@ timer(ch: chan of int, timeout: int)
     sys->sleep(timeout);
     ch <-= 1;
 }
-Local.queryforrmsg(l: self ref Local, node: ref Node, msg: ref Tmsg, callroutine: string): (int, ref Rmsg) 
+Local.queryforrmsg(l: self ref Local, target: ref Node, msg: ref Tmsg, callroutine: string): (int, ref Rmsg) 
 # (rtt, answer)
 {
-    ch := l.sendtmsg(node, msg);
+    ch := l.sendtmsg(target, msg);
     sendtime := sys->millisec();
     killerch := chan of int;
-    spawn timer(killerch, WAITTIME);
+    spawn timer(killerch, WAIT_TIME);
 
     answer: ref Rmsg;
     rtt := QTimeOut;
@@ -1602,7 +1672,7 @@ Local.queryforrmsg(l: self ref Local, node: ref Node, msg: ref Tmsg, callroutine
                 answer = nil;
                 break;
             }
-            if (!answer.senderid.eq(node.id))
+            if (!answer.senderid.eq(target.id))
             {
                 l.logevent(callroutine, "Received answer from unexpected node");
                 answer = nil;
@@ -1741,7 +1811,7 @@ start(localaddr: string, bootstrap: array of ref Node, id: Key, logfd: ref Sys->
 
     node := Node(id, localaddr, localaddr, localaddr, id);
     server := ref Local(node, (localip, localport), contacts, store, localstore, stats, nil,
-        callbacksch, hashtable->new(CALLBACKSIZE, ch), storech, contactsch, 0, 0, 0, 0, 0, logfd, c);
+        callbacksch, hashtable->new(CALLBACKSIZE, ch), storech, contactsch, 0, 0, 0, 0, 0, logfd, c, 0);
     server.contacts.local = server;
 
     spawn server.process();
@@ -1779,8 +1849,10 @@ start(localaddr: string, bootstrap: array of ref Node, id: Key, logfd: ref Sys->
         server.node.pubaddr = localaddr;
     }
 
+    server.serverlastseenalive = daytime->now();
     spawn server.timer();
 
+    # TODO: Add servers to buckets?
     server.dhtfindnode(id, bootstrap);
 
     return server;

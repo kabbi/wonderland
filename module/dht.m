@@ -23,9 +23,10 @@ Dht: module
     EXPIRE_TIME:    con 300;    # 86410
     REFRESH_TIME:   con 60;     # 3600
     REPLICATE_TIME: con 3600;   # 3600
-    REPUBLISH_TIME: con 60; # 86400
+    REPUBLISH_TIME: con 60;     # 86400
     RANDOMNESS:     con 1000;   # 1000
-    WAITTIME:       con 2000;   # 2000
+    WAIT_TIME:      con 5000;   # 2000
+    TKEEP_ALIVE:    con 10000;  # ?
 
     # DHT messages
     TPing,          # 100
@@ -213,6 +214,7 @@ Dht: module
         split: fn(nil: self ref Contacts, idx: int); 
         randomidinbucket: fn(nil: self ref Contacts, idx: int): Key; 
         text: fn(nil: self ref Contacts, tabs: int): string;
+        getpublicnodes: fn(nil: self ref Contacts): array of ref Node;
     };
 
     Local: adt {
@@ -226,16 +228,6 @@ Dht: module
         stats: ref Stats;
         usermsghandler: chan of (ref Tmsg.User);
 
-        # public API
-        dhtfindnode: fn(nil: self ref Local, id: Key, nodes: array of ref Node): ref Node;
-        dhtfindvalue: fn(nil: self ref Local, id: Key): list of ref StoreItem;
-        dhtstore: fn(nil: self ref Local, key: Key, data: array of byte);
-        # returns the rtt, or -1 if node is not reachable
-        # raises exception if node is not found (??)
-        dhtping: fn(nil: self ref Local, id: Key): int;
-        # sets the file descriptor for logs, if nil logging is turned off
-        setlogfd: fn(nil: self ref Local, fd: ref Sys->FD);
-
         # private data and methods
         callbacksch: chan of (int, string, chan of ref Rmsg);
         callbacks: ref HashTable[chan of ref Rmsg];
@@ -246,6 +238,18 @@ Dht: module
             contactsprocpid, storeprocpid: int;
         logfd: ref Sys->FD;
         conn: Sys->Connection;
+
+        serverlastseenalive: int;
+
+        # public API
+        dhtfindnode: fn(nil: self ref Local, id: Key, nodes: array of ref Node): ref Node;
+        dhtfindvalue: fn(nil: self ref Local, id: Key): list of ref StoreItem;
+        dhtstore: fn(nil: self ref Local, key: Key, data: array of byte);
+        # returns the rtt, or -1 if node is not reachable
+        # raises exception if node is not found (??)
+        dhtping: fn(nil: self ref Local, id: Key): int;
+        # sets the file descriptor for logs, if nil logging is turned off
+        setlogfd: fn(nil: self ref Local, fd: ref Sys->FD);
 
         # do some periodic processing
         process: fn(nil: self ref Local);
@@ -274,6 +278,7 @@ Dht: module
         processrandezvousquery: fn(nil: self ref Local, m: ref Tmsg.AskRandezvous, askingnode: ref Node);
         askrandezvous: fn(nil: self ref Local, nodeaddr, srvaddr: string, nodeid, srvid: Key): int;
         queryforrmsg: fn(nil: self ref Local, node: ref Node, msg: ref Tmsg, callroutine: string): (int, ref Rmsg);
+        changeserver: fn(nil: self ref Local);
     };
 
     init:   fn();
