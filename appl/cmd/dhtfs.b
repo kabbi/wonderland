@@ -44,6 +44,8 @@ tree: ref Tree;
 nav: ref Navigator;
 logfilepid: int;
 local: ref Local;
+# if we are started with external local
+extlocal: int;
 
 user: string;
 stderr: ref Sys->FD;
@@ -254,6 +256,7 @@ initwithdht(newlocal: ref Local, mountpt: string, flags: int, debug: int)
 {
     loadmodules();
     local = newlocal;
+    extlocal = 1;
 
     # setup a pipe
     fds := array [2] of ref Sys->FD;
@@ -473,7 +476,8 @@ destroy()
     # kill logfile
     killgroup(logfilepid);
     # close dht
-    local.destroy();
+    if (!extlocal)
+        local.destroy();
 }
 
 # some helper functions
@@ -482,7 +486,7 @@ storetext(store: ref HashTable[list of ref StoreItem]): string
 {
     if (store == nil || len store.all() == 0)
     {
-        return sys->sprint("\t<empty>\n");
+        return sys->sprint("<empty>\n");
     }
     ret: string;
     for (rest := store.all(); rest != nil; rest = tl rest)
@@ -490,7 +494,7 @@ storetext(store: ref HashTable[list of ref StoreItem]): string
         for (tail := (hd rest).val; tail != nil; tail = tl tail)
         {
             item := hd tail;
-            ret += sys->sprint("\t%s: %s, %s, %s\n", (hd rest).key, string item.data,
+            ret += sys->sprint("%s: data[%d], %s, %s\n", (hd rest).key, len item.data,
                        daytime->text(daytime->gmt(item.lastupdate)),
                        daytime->text(daytime->gmt(item.publishtime)));
         }

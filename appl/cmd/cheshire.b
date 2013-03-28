@@ -231,14 +231,13 @@ synthupmap: ref Hashtable->HashTable[string];
 mountpoints: ref Hashtable->HashTable[string];
 
 stderr: ref Sys->FD;
-dhtlogfd: ref Sys->FD;
 mainpid: int;
 
 Qdummy, Qroot, Qcheshire, Qwelcome, Qaddserver,
-Qdhtlog, Qlastpath: con big iota;
+Qdht, Qlastpath: con big iota;
 Qlast: big;
 reservedqids := array [] of 
-  {Qroot, Qcheshire, Qwelcome, Qaddserver, Qdhtlog};
+  {Qroot, Qcheshire, Qwelcome, Qaddserver, Qdht};
 
 local: ref Local;
 
@@ -257,19 +256,6 @@ contains(a: array of big, x: big): int
 }
 
 # some styx helpers
-
-readfile(m: ref Tmsg.Read, fd: ref Sys->FD): ref Rmsg.Read
-{
-    r := ref Rmsg.Read(m.tag, nil);
-    if (fd == nil)
-        return r;
-    buf := array [m.count] of byte;
-    readbytes := sys->pread(fd, buf, len buf, m.offset);
-    if (readbytes == 0)
-        return r;
-    r.data = buf[:readbytes];
-    return r;
-}
 
 writebytes(m: ref Tmsg.Write, d: array of byte): ref Rmsg.Write
 {
@@ -312,7 +298,7 @@ startdhtfs()
     dhtfs := load Dhtfs Dhtfs->PATH;
     if (dhtfs != nil)
     {
-        dhtfs->initwithdht(local, mountedon + "/cheshire/", Sys->MAFTER, 0);
+        dhtfs->initwithdht(local, mountedon + "/cheshire/dht/", Sys->MAFTER, 0);
         sys->fprint(stderr, "Dhtfs started\n");
     }
 }
@@ -390,16 +376,18 @@ init(nil: ref Draw->Context, args: list of string)
     # creating file tree
     # TODO: fix permissions
     synthdirmap = hashtable->new(HASHSIZE, big 0 :: nil);
-    synthdirmap.insert(string Qroot, Qcheshire :: nil);
-    synthdirmap.insert(string Qcheshire, Qwelcome :: Qaddserver :: Qdhtlog :: nil);
-    synthfilemap = hashtable->new(HASHSIZE, ref dir(".", Sys->DMDIR | 8r555, Qroot));
-    synthfilemap.insert(string Qroot, ref dir(".", Sys->DMDIR | 8r555, Qroot));
-    synthfilemap.insert(string Qcheshire, ref dir("cheshire", Sys->DMDIR | 8r555, Qcheshire));
-    synthfilemap.insert(string Qwelcome, ref dir("welcome", 8r555, Qwelcome));
-    synthfilemap.insert(string Qaddserver, ref dir("addserver", 8r777, Qaddserver));
-    synthfilemap.insert(string Qdhtlog, ref dir("dhtlog", 8r555, Qdhtlog));
+    synthdirmap.insert(string Qroot,        Qcheshire :: nil);
+    synthdirmap.insert(string Qcheshire,    Qwelcome :: Qaddserver :: Qdht :: nil);
+    synthdirmap.insert(string Qdht,         nil);
+    synthfilemap = hashtable->new(HASHSIZE, ref dir(".",        Sys->DMDIR | 8r555, Qroot));
+    synthfilemap.insert(string Qroot,       ref dir(".",        Sys->DMDIR | 8r555, Qroot));
+    synthfilemap.insert(string Qcheshire,   ref dir("cheshire", Sys->DMDIR | 8r555, Qcheshire));
+    synthfilemap.insert(string Qdht,        ref dir("dht",   Sys->DMDIR | 8r555, Qdht));
+    synthfilemap.insert(string Qwelcome,    ref dir("welcome",  8r555, Qwelcome));
+    synthfilemap.insert(string Qaddserver,  ref dir("addserver",8r777, Qaddserver));
     synthupmap = hashtable->new(HASHSIZE, "");
     synthupmap.insert(string Qcheshire, string Qroot);
+    synthupmap.insert(string Qdht, string Qcheshire);
 
     # parse bootstrap file
     fd := sys->open(hd tl args, Sys->OREAD);
@@ -441,6 +429,7 @@ serverloop(tchan: chan of ref Styx->Tmsg, srv: ref Styxserver, navops: chan of r
         gm := <-tchan;
         if (gm == nil) {
             sys->fprint(stderr, "Walking away...\n");
+            sys->unmount(nil, mountedon + "/cheshire/dht");
             local.destroy();
             navops <-= nil;
             exit;
@@ -472,8 +461,6 @@ handlemsg(gm: ref Styx->Tmsg, srv: ref Styxserver, nav: ref Navigator): ref Styx
                 answer = styxservers->readstr(m, "Hello, and welcome to the Wonderland!\n");
             else if (c.path == Qaddserver)
                 answer = styxservers->readstr(m, "Write something like <serveraddr> <serverpath>\n");
-            else if (c.path == Qdhtlog)
-                answer = readfile(m, dhtlogfd);
             else
                 answer = ref Rmsg.Error(m.tag, Enotfound);
             return answer;
