@@ -209,7 +209,7 @@ DhtValue.text(v: self ref DhtValue): string
 
 badmodule(p: string)
 {
-    sys->fprint(sys->fildes(2), "cannot load %s: %r\n", p);
+    cheshirelog(VLCritical, sys->sprint("cannot load %s: %r\n", p));
     raise "fail:bad module";
 }
 
@@ -241,9 +241,22 @@ reservedqids := array [] of
 
 local: ref Local;
 
+# verbosity levels
+VLCritical,
+VLError,
+VLInformation,
+VLDebugCheshire,
+VLDebugEverything: con iota;
+verbosity := VLError;
 mountedon: string;
 
 # helper functions
+
+cheshirelog(level: int, msg: string)
+{
+    if (level < verbosity)
+        sys->fprint(stderr, "%s\n", msg);
+}
 
 contains(a: array of big, x: big): int
 {
@@ -285,10 +298,10 @@ startdht()
     local = dht->start(localaddr, straplist, localkey, nil);
     if (local == nil)
     {
-        sys->fprint(stderr, "Very bad, dht init error: %r\n");
+        cheshirelog(VLCritical, sys->sprint("Very bad, dht init error: %r"));
         raise sys->sprint("fail:dht:%r");
     }
-    sys->fprint(stderr, "Dht started\n");
+    cheshirelog(VLInformation, "Dht started");
     local.usermsghandler = chan of (ref Dht->Tmsg.User);
     spawn dhtmsghandler();
 }
@@ -299,7 +312,7 @@ startdhtfs()
     if (dhtfs != nil)
     {
         dhtfs->initwithdht(local, mountedon + "/cheshire/dht/", Sys->MAFTER, 0);
-        sys->fprint(stderr, "Dhtfs started\n");
+        cheshirelog(VLInformation, "Dhtfs started");
     }
 }
 
@@ -307,8 +320,8 @@ init(nil: ref Draw->Context, args: list of string)
 {
     # TODO: fix arguments processing, usage, help and mounting
     args = tl args;
-    if (len args != 2)
-        raise "fail:usage: cheshire <local addr> <neighbours file>";
+    if (len args < 2)
+        raise "fail:usage: cheshire <local addr> <neighbours file> [verbose level]";
     # loading modules
     sys = load Sys Sys->PATH;
     
@@ -321,7 +334,6 @@ init(nil: ref Draw->Context, args: list of string)
     if (styxservers == nil)
         badmodule(Styxservers->PATH);
     styxservers->init(styx);
-    styxservers->traceset(1);
     daytime = load Daytime Daytime->PATH;
     if (daytime == nil)
         badmodule(Daytime->PATH);
@@ -365,10 +377,10 @@ init(nil: ref Draw->Context, args: list of string)
     # setup authinfo for authorizing external servers
     authinfo = keyring->readauthinfo("/usr/" + user + "/keyring/default");
     if (authinfo == nil)
-        sys->fprint(stderr, "Reading default keyring failed, no server mounts will be performed\n");
+        cheshirelog(VLError, "Reading default keyring failed, no server mounts will be performed");
 
     # creating navigators and servers
-    sys->fprint(stderr, "Creating styxservers\n");
+    cheshirelog(VLInformation, "Creating styxservers");
     navops := chan of ref Styxservers->Navop;
     (tchan, srv) := Styxserver.new(sys->fildes(0), Navigator.new(navops), Qroot);
     spawn navigator(navops);
@@ -390,20 +402,30 @@ init(nil: ref Draw->Context, args: list of string)
     synthupmap.insert(string Qdht, string Qcheshire);
 
     # parse bootstrap file
-    fd := sys->open(hd tl args, Sys->OREAD);
+    args = tl args;
+    if (args == nil)
+        raise "fail:specify neighbours file";
+    fd := sys->open(hd args, Sys->OREAD);
     if (fd == nil)
         raise "fail:bootstrap file not found";
     buf := array [8192] of byte;
     readbytes := sys->read(fd, buf, len buf);
     if (readbytes < 0)
         raise "fail:bootstrap file not found";
-    sys->fprint(stderr, "Parsing bootstrap\n");
+    cheshirelog(VLInformation, "Parsing bootstrap");
     straplist = strapparse(string buf[:readbytes]);
     startdht();
 
+    # verbosity level
+    args = tl args;
+    if (args != nil)
+        verbosity = int hd args;
+    if (verbosity > VLDebugCheshire)
+        styxservers->traceset(1);
+
     Qlast = Qlastpath;
 
-    sys->fprint(stderr, "Cheshire is up and running!\n");
+    cheshirelog(VLInformation, "Cheshire is up and running!");
     qidtopath = hashtable->new(HASHSIZE, "");
     pathtoqid = hashtable->new(HASHSIZE, "");
     qidtopath.insert(string Qroot, "/");
@@ -428,7 +450,7 @@ serverloop(tchan: chan of ref Styx->Tmsg, srv: ref Styxserver, navops: chan of r
     for (;;) {
         gm := <-tchan;
         if (gm == nil) {
-            sys->fprint(stderr, "Walking away...\n");
+            cheshirelog(VLInformation, "Walking away...");
             sys->unmount(nil, mountedon + "/cheshire/dht");
             local.destroy();
             navops <-= nil;
@@ -446,7 +468,7 @@ handlemsg(gm: ref Styx->Tmsg, srv: ref Styxserver, nav: ref Navigator): ref Styx
     reply = nil;
     pick m := gm {
     Readerror =>
-        sys->fprint(stderr, "Some read error: %s\n", m.error);
+        cheshirelog(VLError, "Some read error: " + m.error);
         return ref Rmsg.Error(m.tag, "Some read error");
     Read =>
         (c, err) := srv.canread(m);
@@ -654,11 +676,11 @@ dhtmsghandler()
     while (1)
     {
         msg := <-local.usermsghandler;
-        sys->fprint(stderr, "Incoming msg from %s", (ref msg.sender).text());
+        cheshirelog(VLInformation, "Incoming msg from " + (ref msg.sender).text());
         # strip the destination from the message
         if (len msg.data <= Bigkey->BB)
         {
-            sys->fprint(stderr, "Message too short, ignored\n");
+            cheshirelog(VLError, "Message too short, ignored");
             continue;
         }
         clientid := msg.sender.id.text();
@@ -671,10 +693,10 @@ dhtmsghandler()
             styxservfd := runningstyxservers.find(styxservid.text());
             if (styxservfd == nil)
             {
-                sys->fprint(stderr, "The running styx server with id %s does not exist\n", styxservid.text());
+                cheshirelog(VLError, "The running styx server with id " + styxservid.text() + " does not exist");
                 continue;
             }
-            sys->fprint(stderr, "Cloning server for this client\n");
+            cheshirelog(VLInformation, "Cloning server for this client");
             clientfd = cloneserver(styxservfd);
             styxclients.insert(clientid, clientfd);
         }
@@ -686,13 +708,13 @@ dhtmsghandler()
             if (answer.uid.eq(msg.uid))
             {
                 local.sendrmsg(msg.sender.prvaddr, msg.sender.pubaddr, answer);
-                sys->fprint(stderr, "Answered with stored result\n");
+                cheshirelog(VLInformation, "Answered with stored result");
                 continue;
             }
             styxanswers.delete(clientid);
         }
         # if ok, pass the data to styxserver
-        sys->fprint(stderr, "Passing packet to styxserver\n");
+        cheshirelog(VLInformation, "Passing packet to styxserver");
         buf := array [Styx->MAXRPC] of byte;
         sys->write(clientfd, msgdata, len msgdata);
         readbytes := sys->read(clientfd, buf, len buf);
@@ -701,7 +723,7 @@ dhtmsghandler()
         local.sendrmsg(msg.sender.prvaddr, msg.sender.pubaddr, answer);
         # store the answer to reply with it in case of retransmits
         styxanswers.insert(clientid, answer);
-        sys->fprint(stderr, "Answered\n");
+        cheshirelog(VLInformation, "Answered");
     }
 }
 
@@ -714,55 +736,63 @@ mountserver(serv: ref DhtValue.StyxServer, path: string)
         servnode = ref local.node;
     if (servnode == nil)
     {
-        sys->fprint(stderr, "Node hosting server not found, try again later\n");
+        cheshirelog(VLError, "Node hosting server not found, try again later");
         return;
     }
     # we will use that to proxy styx requests
     fds := array [2] of ref Sys->FD;
     sys->pipe(fds);
     spawn remotemounter(servnode, serv.styxservid, fds[1]);
-    sys->fprint(stderr, "Waiting for sys->mount to return\n");
+    cheshirelog(VLInformation, "Waiting for sys->mount to return\n");
     sys->mount(fds[0], nil, path, Sys->MREPL, nil);
-    sys->fprint(stderr, "Mount success, maybe\n");
+    cheshirelog(VLInformation, "Mount success, maybe\n");
 }
 
 remotemounter(servnode: ref Node, styxservid: Key, servfd: ref Sys->FD)
 {
-    sys->fprint(stderr, "Starting mounter, using node: %s\n", servnode.text());
+    cheshirelog(VLInformation, "Starting mounter, using node: " + servnode.text());
     while (1)
     {
         # pass the message to styx server through dht
         buf := array [Styx->MAXRPC] of byte;
-        sys->fprint(stderr, "Reading data from sys->mount\n");
+        cheshirelog(VLInformation, "Reading data from sys->mount\n");
         readbytes := sys->read(servfd, buf, len buf);
-        sys->fprint(stderr, "Got something - %d bytes, processing\n", readbytes);
-        (l, m) := Tmsg.unpack(buf[:readbytes]);
-        sys->fprint(stderr, "Trying to unpack: %d\n", l);
-        if (m != nil)
-            sys->fprint(stderr, "Message: %s\n", m.text());
+        cheshirelog(VLInformation, "Got something - " + string readbytes + " bytes, processing");
+        if (verbosity >= VLDebugCheshire)
+        {
+            (l, m) := Tmsg.unpack(buf[:readbytes]);
+            cheshirelog(VLDebugCheshire, "Trying to unpack: " + string l);
+            if (m != nil)
+                cheshirelog(VLDebugCheshire, "Message: " + m.text());
+        }
         # prepare the message
         msg := array [readbytes + Bigkey->BB] of byte;
         msg[:] = styxservid.data[:Bigkey->BB];
         msg[Bigkey->BB:] = buf[:readbytes];
         # send it using dht power
         dhtmsg := ref (Dht->Tmsg).User(Key.generate(), local.node, servnode.id, msg);
-        sys->fprint(stderr, "Message sent to server: %s\n", styxservid.text());
-        sys->fprint(stderr, "Awaiting response\n");
+        cheshirelog(VLInformation, "Message sent to server: " + styxservid.text());
+        cheshirelog(VLInformation, "Awaiting response");
         (rtt, reply) := local.queryforrmsg(servnode, dhtmsg, MAXRETRANSMIT, "cheshire:remotemounter");
         if (reply != nil)
             pick r := reply {
                 User =>
-                    sys->fprint(stderr, "Got answer (%d bytes), passing back to system\n", len r.data);
+                    cheshirelog(VLInformation, "Got answer (" + string len r.data + " bytes), passing back to system");
+                    if (verbosity >= VLDebugCheshire)
                     {
                         (l, m) := Rmsg.unpack(r.data);
-                        sys->fprint(stderr, "Trying to unpack the answer: %d\n", l);
+                        cheshirelog(VLDebugCheshire, "Trying to unpack the answer: " + string l);
                         if (m != nil)
-                            sys->fprint(stderr, "Message: %s\n", m.text());
+                            cheshirelog(VLDebugCheshire, "Message: " + m.text());
                     }
                     sys->write(servfd, r.data, len r.data);
             }
         else
         {
+            answertag := 0;
+            (l, m) := Tmsg.unpack(buf[:readbytes]);
+            if (m != nil)
+                answertag = m.tag;
             answer := ref Rmsg.Error(m.tag, "styx error: message wait timeout");
             packedanswer := answer.pack();
             sys->write(servfd, packedanswer, len packedanswer);
@@ -779,7 +809,7 @@ serverparse(s: string): string
     (nil, strings) := sys->tokenize(s, "\n");
     for (it := strings; it != nil; it = tl it)
     {
-        sys->fprint(stderr, "Parsing addserver entry: %s\n", hd it);
+        cheshirelog(VLInformation, "Parsing addserver entry: " + hd it);
         (cmd, fullpath) := str->splitr(hd it, " ");
         if (fullpath == nil || cmd == nil || cmd[:1] == "#")
             continue;
@@ -794,8 +824,8 @@ serverparse(s: string): string
         hashdata := array of byte path;
         keyring->sha1(hashdata, len hashdata, keydata, nil);
         local.dhtstore(Key(keydata[:Bigkey->BB]), value.pack());
-        sys->fprint(stderr, "Added server by path: %s, dht key: %s\n%s\n", 
-                            path, Key(keydata[:Bigkey->BB]).text(), value.text());
+        cheshirelog(VLInformation, "Added server by path: " + path + ", dht key: " + 
+                                   Key(keydata[:Bigkey->BB]).text() + "\n" + value.text());
         # the most importand part:
         startserver(cmd, value.styxservid);
         # and now for every path component
@@ -811,18 +841,18 @@ serverparse(s: string): string
             hashdata = array of byte curpath;
             keyring->sha1(hashdata, len hashdata, keydata, nil);
             local.dhtstore(Key(keydata[:Bigkey->BB]), value.pack());
-            sys->fprint(stderr, "Added folder by path: %s, dht key: %s\n%s\n",
-                                curpath, Key(keydata[:Bigkey->BB]).text(), value.text());
+            cheshirelog(VLInformation, "Added folder by path: " + curpath + ", dht key: " + 
+                                       Key(keydata[:Bigkey->BB]).text() + "\n" + value.text());
 
             curpath += folder + "/";
         }
     }
-    return "ok"; 
+    return "ok";
 }
 
 startserver(cmd: string, id: Key)
 {
-    sys->fprint(stderr, "Starting styx server with cmd: %s and key %s\n", cmd, id.text());
+    cheshirelog(VLInformation, "Starting styx server with cmd: " + cmd + " and key " + id.text());
     # TODO: here, above and below: despawn everything carefully, watch
     #       closed streams and think about isolating threads (more or less)
     ch := chan of int;
@@ -833,7 +863,7 @@ startserver(cmd: string, id: Key)
 cloneserver(servfd: ref Sys->FD): ref Sys->FD
 {
     ch := chan of ref Sys->FD;
-    sys->fprint(stderr, "Spawning exportproc\n");
+    cheshirelog(VLInformation, "Spawning exportproc");
     spawn exportproc(ch, servfd);
     return <-ch;
 }
@@ -842,9 +872,9 @@ exportproc(ch: chan of ref Sys->FD, servfd: ref Sys->FD)
 {
     fds := array [2] of ref Sys->FD;
     sys->pipe(fds);
-    sys->fprint(stderr, "Debug 1\n");
+    cheshirelog(VLDebugCheshire, "Debug 1");
     ch <-= fds[1]; # return the second pipe end
-    sys->fprint(stderr, "Debug 2\n");
+    cheshirelog(VLDebugCheshire, "Debug 2");
     # isolate self
     sys->pctl(Sys->NEWFD | Sys->NEWNS, 2 :: servfd.fd :: fds[0].fd :: nil);
     servfd = sys->fildes(servfd.fd);
@@ -854,11 +884,11 @@ exportproc(ch: chan of ref Sys->FD, servfd: ref Sys->FD)
     # comment from styxlisten.b:
     # XXX unfortunately we cannot pass through the aname from
     # the original attach, an inherent shortcoming of this scheme.
-    sys->fprint(stderr, "Mounting on /\n");
+    cheshirelog(VLInformation, "Mounting on /");
     if (sys->mount(servfd, nil, "/", Sys->MREPL|Sys->MCREATE, nil) == -1)
-        sys->fprint(stderr, "Cannot mount: %r\n");
+        cheshirelog(VLError, sys->sprint("Cannot mount: %r"));
 
-    sys->fprint(stderr, "Exporting /\n");
+    cheshirelog(VLInformation, "Exporting /");
     sys->export(fds[0], "/", Sys->EXPASYNC);
 }
 
@@ -880,14 +910,14 @@ runcmd(ctxt: ref Draw->Context, argv: list of string, stdin: ref Sys->FD,
     stdin = nil;
     #sync <-= 0;
     sh := load Sh Sh->PATH;
-    sys->fprint(stderr, "Executing %s\n", hd argv);
+    cheshirelog(VLInformation, "Executing " + hd argv);
     e := sh->run(ctxt, argv);
     #kill(<-lsync, "kill");
 
     if(e != nil)
-        sys->fprint(stderr, "cheshire: command exited with error: %s\n", e);
+        cheshirelog(VLError, "cheshire: command exited with error: " + e);
     else
-        sys->fprint(stderr, "cheshire: command exited\n");
+        cheshirelog(VLInformation, "cheshire: command exited");
 
 }
 
@@ -906,7 +936,7 @@ strapparse(s: string): array of ref Node
     for (it := strings; it != nil; it = tl it)
     {
         # TODO: adopt to the new Node format
-        sys->fprint(stderr, "Parsing bootstrap entry: %s\n", hd it);
+        cheshirelog(VLInformation, "Parsing bootstrap entry: " + hd it);
         (nil, blocks) := sys->tokenize(hd it, " ");
         if (blocks == nil || len blocks != 2 || (hd blocks)[:1] == "#")
             continue;

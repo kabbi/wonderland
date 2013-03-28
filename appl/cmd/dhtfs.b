@@ -463,7 +463,7 @@ startlogfile(mountpt: string, readychan: chan of int)
     logfile := load Logfile "/dis/logfile.dis";
     if (logfile == nil)
         badmodule("/dis/logfile.dis");
-    sys->fprint(stderr, "Starting logfile on %s\n", mountpt);
+    #sys->fprint(stderr, "Starting logfile on %s\n", mountpt); - not actually an error ;)
     logfile->init(nil, "logfile" :: mountpt :: nil);
     readychan <-= 1;
     readychan <-= 13; # the second one for waiting
