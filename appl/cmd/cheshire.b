@@ -683,9 +683,9 @@ dhtmsghandler()
             cheshirelog(VLError, "Message too short, ignored");
             continue;
         }
-        clientid := msg.sender.id.text();
         styxservid := Key(msg.data[:Bigkey->BB]);
         msgdata := msg.data[Bigkey->BB:];
+        clientid := msg.sender.id.text() + styxservid.text();
         # firstly clone the server for the client, if it's his first message
         clientfd := styxclients.find(clientid);
         if (clientfd == nil)
