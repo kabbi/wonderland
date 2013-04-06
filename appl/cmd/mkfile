@@ -120,6 +120,7 @@ TARG=\
 	plumber.dis\
 	prof.dis\
 	ps.dis\
+	pipefs.dis\
 	puttar.dis\
 	pwd.dis\
 	ramfile.dis\

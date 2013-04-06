@@ -16,7 +16,7 @@ Dht: module
     # or http://www.freezepage.com/1350050954SJTTPDWBEX
 
     # DHT constants
-    ALPHA:  con 1;
+    ALPHA:  con 2;
     B:      con 32;
     BB:     con B/8; # B in bytes
     K:      con 5; 
@@ -88,6 +88,7 @@ Dht: module
         srvid: Key;
 
         text: fn(nil: self ref Node): string;
+        eq: fn(n1: ref Node, n2: ref Node): int;
     };
 
     StoreItem: adt {
@@ -190,7 +191,7 @@ Dht: module
     };
 
     Bucket: adt {
-        nodes: array of Node;
+        nodes: list of ref Node;
         minrange: Key;
         maxrange: Key;
         lastaccess: int;
@@ -198,7 +199,8 @@ Dht: module
         isinrange: fn(nil: self ref Bucket, id: Key): int;
         addnode: fn(nil: self ref Bucket, n: ref Node): int;
         getnodes: fn(nil: self ref Bucket, size: int): array of Node;
-        findnode: fn(nil: self ref Bucket, id: Key): int;
+        removenode: fn(nil: self ref Bucket, id: Key);
+        findnode: fn(nil: self ref Bucket, id: Key): ref Node;
         text: fn(nil: self ref Bucket, tabs: int): string; 
     };
 
