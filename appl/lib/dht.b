@@ -843,6 +843,10 @@ Node.text(n: self ref Node): string
     return sys->sprint("Node(%s,[%s/%s],Srv:%s)", n.id.text(), 
                                  n.prvaddr, n.pubaddr, n.srvaddr);
 }
+Node.eq(n1: ref Node, n2: ref Node): int
+{
+    return n1.id.eq(n2.id);
+}
 
 StoreItem.eq(a, b: ref StoreItem): int
 {
@@ -863,29 +867,35 @@ Bucket.addnode(b: self ref Bucket, n: ref Node): int
     #TODO: Rewrite with lists!
     if (len b.nodes >= K)
         return EBucketFull;
-    if (b.findnode(n.id) != -1)
+    if (b.findnode(n.id) != nil)
         return EAlreadyPresent; 
-    newnodes := array [len b.nodes + 1] of Node;
-    newnodes[:] = b.nodes[:];
-    newnodes[len b.nodes] = Node(n.id, n.prvaddr, n.pubaddr, n.srvaddr, n.srvid);
-    b.nodes = newnodes;
+    b.nodes = n :: lists->delete(n, b.nodes);
     return 0;
 }
 Bucket.getnodes(b: self ref Bucket, size: int): array of Node
 {
-    # return 'size' last nodes
-    if (len b.nodes >= size)
-        return b.nodes[len b.nodes - size:];
-    else
-        return b.nodes;
+    # return 'size' first nodes
+    tail := b.nodes;
+    result := array [min(size, len b.nodes)] of Node;
+    for (i := 0; i < len result; i++)
+    {
+        result[i] = *(hd tail);
+        tail = tl tail;
+    }
+    return result;
 }
-Bucket.findnode(b: self ref Bucket, id: Key): int
+Bucket.removenode(b: self ref Bucket, id: Key)
 {
-    for (i := 0; i < len b.nodes; i++)
-        if (b.nodes[i].id.eq(id))
-            return i;
-    # not found
-    return -1;
+    dummynode := ref Node(id, "", "", "", id);
+    b.nodes = lists->delete(dummynode, b.nodes);
+}
+Bucket.findnode(b: self ref Bucket, id: Key): ref Node
+{
+    dummynode := ref Node(id, "", "", "", id);
+    tail := lists->find(dummynode, b.nodes);
+    if (tail != nil)
+        return hd tail;
+    return nil;
 }
 Bucket.text(b: self ref Bucket, tabs: int): string
 {
@@ -894,8 +904,8 @@ Bucket.text(b: self ref Bucket, tabs: int): string
     s := sys->sprint("%s(Bucket [lastaccess=%s]\n", indent, daytime->text(daytime->local(b.lastaccess)));
     s += sys->sprint("%s        [minrange=%s]\n", indent, b.minrange.text());
     s += sys->sprint("%s        Nodes:\n", indent);
-    for (i := 0; i < len b.nodes; i++)
-        s += sys->sprint("%s             %s:\n", indent, (ref b.nodes[i]).text());
+    for (tail := b.nodes; tail != nil; tail = tl tail)
+        s += sys->sprint("%s             %s:\n", indent, (hd tail).text());
     s += sys->sprint("%s        [maxrange=%s])\n", indent, b.maxrange.text());
     return s;
 }
@@ -923,9 +933,9 @@ Contacts.addcontact(c: self ref Contacts, n: ref Node)
             }
             else
             {
-                node := ref c.buckets[bucketInd].nodes[0];
+                node := hd c.buckets[bucketInd].nodes;
                 msg := ref Tmsg.Ping(Key.generate(), c.local.node, node.id);
-                    spawn replacefirstnode(c, n, node, msg);
+                spawn replacefirstnode(c, n, node, msg);
             }
         EAlreadyPresent =>
             c.local.logevent("addcontact", "Already present, moving to top");
@@ -938,11 +948,11 @@ Contacts.split(c: self ref Contacts, idx: int)
     c.local.logevent("split", "Splitting bucket " + string idx);
     src := c.buckets[idx];
     mid := src.maxrange.subtract(src.maxrange.subtract(src.minrange).halve()); # m = r - ((r - l) / 2)
-    l := ref Bucket(array [0] of Node, src.minrange, mid, src.lastaccess);
-    r := ref Bucket(array [0] of Node, mid, src.maxrange, src.lastaccess);
-    for (i := 0; i < len src.nodes; i++)
+    l := ref Bucket(nil, src.minrange, mid, src.lastaccess);
+    r := ref Bucket(nil, mid, src.maxrange, src.lastaccess);
+    for (tail := src.nodes; tail != nil; tail = tl tail)
     {
-        n := ref src.nodes[i];
+        n := hd tail;
         if (l.isinrange(n.id))
             l.addnode(n);
         else
@@ -960,14 +970,7 @@ Contacts.removecontact(c: self ref Contacts, id: Key)
 {
     c.local.logevent("removecontact", "Removing contact " + id.text());
     trgbucket := c.buckets[c.findbucket(id)];
-    idx := trgbucket.findnode(id);
-    if (idx == -1)
-        return;
-    nodes := array [len trgbucket.nodes - 1] of Node;
-    nodes[:] = trgbucket.nodes[:idx];
-    nodes[idx:] = trgbucket.nodes[idx+1:];
-    trgbucket.nodes = nodes;
-    c.buckets[c.findbucket(id)] = trgbucket;
+    trgbucket.removenode(id);
 }
 Contacts.findbucket(c: self ref Contacts, id: Key): int
 {
@@ -1013,10 +1016,7 @@ Contacts.getnode(c: self ref Contacts, id: Key): ref Node
     idx := c.findbucket(id);
     if (idx == -1)
         return nil;
-    nodeIdx := c.buckets[idx].findnode(id);
-    if (nodeIdx == -1)
-        return nil;
-    return ref c.buckets[idx].nodes[nodeIdx];
+    return c.buckets[idx].findnode(id);
 }
 Contacts.findclosenodes(c: self ref Contacts, id: Key): array of Node
 {
@@ -1050,21 +1050,15 @@ Contacts.getpublicnodes(c: self ref Contacts): array of ref Node
     b := c.buckets; #Damn, it still allows races! #$%!&!, Damned refs!
     count := 0;
     for (i := 0; i < len b; ++i)
-    {
-        curbucket := b[i].nodes;
-        for (j := 0; j < len curbucket; ++j)
-            if (ispublic(ref curbucket[j]))
+        for (tail := b[i].nodes; tail != nil; tail = tl tail)
+            if (ispublic(hd tail))
                 ++count;
-    }
     l := array [count] of ref Node;
     count = 0;
     for (i = 0; i < len b; ++i)
-    {
-        curbucket := b[i].nodes;
-        for (j := 0; j < len curbucket; ++j)
-            if (ispublic(ref curbucket[j]))
-                l[count++] = ref curbucket[j];
-    }
+        for (tail = b[i].nodes; tail != nil; tail = tl tail)
+            if (ispublic(hd tail))
+                l[count++] = hd tail;
     return l;
 }
 Contacts.text(c: self ref Contacts, tabs: int): string
@@ -1375,7 +1369,8 @@ Local.storeproc(l: self ref Local)
         {
             items := table.find(key);
             if (items == nil || lists->find(item, items) == nil)
-                continue; newitemlist := lists->delete(item, items);
+                continue;
+            newitemlist := lists->delete(item, items);
             table.delete(key);
             if (len newitemlist > 0)
                 table.insert(key, newitemlist);
@@ -1725,7 +1720,7 @@ Local.askrandezvous(l: self ref Local, nodeaddr, srvaddr: string, nodeid, srvid:
     l.logevent("askrandezvous", "Asking " + srvaddr + " for randezvous with " + nodeaddr + ".");
     askrandezvous := ref Tmsg.AskRandezvous(Key.generate(), l.node, srvid, nodeid, nodeaddr);
     server := ref Node(srvid, srvaddr, srvaddr, srvaddr, srvid);
-    (rtt, reply) := l.queryforrmsg(server, askrandezvous, 1, "askrandezvous");
+    (rtt, reply) := l.queryforrmsg(server, askrandezvous, 0, "askrandezvous");
     result := RFail;
     if (reply != nil)
         pick r := reply {
@@ -1788,7 +1783,7 @@ start(localaddr: string, bootstrap: array of ref Node, id: Key, logfd: ref Sys->
     (localip, localport) := dialparse(localaddr);
     contacts := ref Contacts(array [1] of ref Bucket, nil);
     # construct the first bucket
-    contacts.buckets[0] = ref Bucket(array [0] of Node,
+    contacts.buckets[0] = ref Bucket(nil,
         Key(array[BB] of { * => byte 0 }),
         Key(array[BB] of { * => byte 16rFF }),
         daytime->now());
