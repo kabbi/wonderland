@@ -1,4 +1,4 @@
-implement rudp;
+implement Rudp;
 
 include "sys.m";
     sys: Sys;
@@ -28,7 +28,7 @@ include "bigkey.m";
     bigkey: Bigkey;
     Key: import bigkey;
 
-include "rupd.m";
+include "rudp.m";
 
 badmodule(p: string)
 {
@@ -81,9 +81,9 @@ MAXCHUNKSIZE: con 190;
 
 
 B:      con 32;
-BB:     con B/8; 
-KEY:    con BB+LEN;
-H:      con KEY+BIT32SIZE+BIT32SIZE+BIT32SIZE;
+BB:     con B/8;
+KEY:    con BB+4;
+H:      con 50;
 
 killpid(pid: int)
 {
@@ -140,7 +140,7 @@ listener(connfd: ref Sys->FD,
     while (1)
     {
         buffer := array [MAXCHUNKSIZE+1] of byte;
-        bytesread := sys->read(l.conn.dfd, buffer, len buffer);
+        bytesread := sys->read(connfd, buffer, len buffer);
 
         if (bytesread <= 0)
             raise sys->sprint("fail:readerror");
@@ -153,10 +153,7 @@ listener(connfd: ref Sys->FD,
         buffer = buffer[Udp4hdrlen:];
 
         if (bytesread < H + Udp4hdrlen)
-        {
-            l.logevent("process", "Incoming packet too short, ignoring");
             continue;
-        }
     }
 }
 
@@ -164,19 +161,21 @@ wrapper(connfd: ref Sys->FD,
         tchan: chan of (array of byte, int, int), # data, timeout, retry count
         rchan: chan of array of byte)
 {
-    dummy := ref Chunk {Key.generate(), 0, 0, nil};
-    callbacks := hashtable->new(HASHSIZE, array [] of {dummy});
+    callbacks := hashtable->new(HASHSIZE, chan of ref Chunk);
     ch: chan of int;
-    spawn listen(connfd, callbacks, ch, rchan);
+    spawn listener(connfd, callbacks, ch, rchan);
     listenpid := <-ch;
-    while (((data, timeout, retry) := <-tchan) != nil)
+    while (1)
     {
+        (data, timeout, retry) := <-tchan;
+        if (data == nil)
+            break; # terminate
         spawn sender(data, timeout, retry, callbacks, rchan);
     }
     killpid(listenpid);
 }
 
-new(connfd: ref Sys->FD, tchan: chan of array of byte): chan of array of byte
+new(connfd: ref Sys->FD, tchan: chan of (array of byte, int, int)): chan of array of byte
 {
     rchan := chan of array of byte;
     spawn wrapper(connfd, tchan, rchan);
