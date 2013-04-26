@@ -86,6 +86,9 @@ init(ctxt: ref Draw->Context, args: list of string)
             hdr.pack(packet, Udp4hdrlen);
             packet[Udp4hdrlen] = byte 42;
             tchan <-= (packet, 1000, 3);
+            # block
+            dummy := array [1] of byte;
+            sys->read(sys->fildes(0), dummy, len dummy);
         }
         else {
             rchan := rudp->new(c.dfd, tchan);

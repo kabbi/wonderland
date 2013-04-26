@@ -96,8 +96,9 @@ init()
 
 RECEIVETIMEOUT: con 10000;
 HASHSIZE:       con 31;
-RECVBUFFERSIZE:  con 8192;
+RECVBUFFERSIZE: con 8192;
 MAXCHUNKSIZE:   con 5000;
+MAXSENTPACKETS: con 2;
 BIT32SZ:        con 4;
 BIT64SZ:        con 8;
 KEY:            con Bigkey->BB+BIT32SZ;
@@ -222,7 +223,9 @@ Chunk.unpack(a: array of byte): ref Chunk
 }
 Chunk.send(c: self ref Chunk, connfd: ref Sys->FD, hdr: ref Udphdr)
 {
-    rudplog("Sending chunk to " + hdr.raddr.text() + "!" + string hdr.rport);
+    hdr.laddr = ip->selfv4;
+    rudplog("Sending chunk: " + hdr.laddr.text() + "!" + string hdr.lport + 
+        "->" + hdr.raddr.text() + "!" + string hdr.rport);
     packedchunk := c.pack();
     packet := array [len packedchunk + Udp4hdrlen] of byte;
     hdr.pack(packet, Udp4hdrlen);
@@ -305,7 +308,7 @@ accepter(packetid: Key, callbacks: ref HashTable[chan of ref Chunk],
 }
 
 sender(connfd: ref Sys->FD, data: array of byte, timeout, retry: int, 
-       callbacks: ref HashTable[chan of ref Chunk])
+       callbacks: ref HashTable[chan of ref Chunk], waitchan: chan of int)
 {
     # Splice into pieces
     # Create hashtable of acknowledged datagrams
@@ -345,19 +348,27 @@ sender(connfd: ref Sys->FD, data: array of byte, timeout, retry: int,
             data[lowerbound:uppedbound]);
     }
 
+    # we are ready
+    waitchan <-= 1;
+
     # start getting answers
-    gotanswers := 0;
+    totalgotanswers := 0;
     for (i = 0; i < retry; i++)
     {
         trymore := 0;
-        rudplog("Sending remaining " + string (chunkstotal - gotanswers) + " chunks");
+        rudplog("Sending remaining chunks");
         # resend unacknowledged chunks
+        sentpackets := 0;
         for (j := 0; j < chunkstotal; j++)
-            if (chunkacks[j] == 0)
+            if (chunkacks[j] == 0 && sentpackets < MAXSENTPACKETS)
+            {
                 chunks[j].send(connfd, hdr);
+                sentpackets++;
+            }
         # listen for acks
+        gotanswers := 0;
         gottimeout := 0;
-        while (gotanswers != chunkstotal && gottimeout != 1)
+        while (gotanswers != sentpackets && gottimeout != 1)
         {
             killerch := chan of int;
             spawn timer(killerch, timeout);
@@ -380,7 +391,8 @@ sender(connfd: ref Sys->FD, data: array of byte, timeout, retry: int,
         }
         if (trymore == 1)
             i--;
-        if (gottimeout == 0) {
+        totalgotanswers += gotanswers;
+        if (gottimeout == 0 && totalgotanswers == chunkstotal) {
             rudplog("Send finished, all acks received");
             return; # we did it!
         }
@@ -461,7 +473,10 @@ wrapper(connfd: ref Sys->FD,
         rudplog("Got some data (" + string len data + ") from user, processing");
         if (len data == 0)
             break; # terminate
-        sender(connfd, data, timeout, retry, callbacks);
+        waitchan := chan of int;
+        spawn sender(connfd, data, timeout, retry, callbacks, waitchan);
+        # wait some time to allow the sender to eat the data
+        <-waitchan;
     }
     rudplog("Terminating");
     killpid(listenpid);
