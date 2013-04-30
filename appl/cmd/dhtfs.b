@@ -8,7 +8,7 @@ include "styx.m";
     Rmsg, Tmsg: import styx;
 include "styxservers.m";
     styxservers: Styxservers;
-    Ebadfid, Enotfound, Eopen, Einuse, Eperm: import Styxservers;
+    Ebadfid, Enotfound, Eopen, Einuse, Eperm, Eoffset: import Styxservers;
     Styxserver, readbytes, readstr, Navigator, Fid: import styxservers;
     nametree: Nametree;
     Tree: import nametree;
@@ -37,13 +37,18 @@ Logfile: module {
     init: fn(nil: ref Draw->Context, argv: list of string);
 };
 
+HASHSIZE: con 31;
 Qroot: con big 16rfffffff;
 Qfindnode, Qfindvalue, Qstore, Qping, Qstats, Qstatus, 
-Qlocalstore, Qcontacts, Qnode: con big iota + big 16r42;
+Qlocalstore, Qourstore, Qcontacts, Qnode, Qfoundvalues: con big iota + big 16r42;
+Qfirstfolder: con big 10000;
+Qlastfolder := Qfirstfolder + big 1;
+Qlast := Qnode + big 1;
 tree: ref Tree;
 nav: ref Navigator;
 logfilepid: int;
 local: ref Local;
+findresults: ref HashTable[array of byte];
 # if we are started with external local
 extlocal: int;
 
@@ -105,6 +110,23 @@ getstats(local: ref Local): string
     ret += sys->sprint("Bucket overflowed: %d\n", stats.bucketoverflows);
     ret += sys->sprint("Emitted log entries: %d\n", stats.logentries);
     return ret;
+}
+
+createtree()
+{
+    # TODO: fix permissions
+    tree.create(Qroot, dir(".", Sys->DMDIR | 8r555, Qroot));
+    tree.create(Qroot, dir("foundvalues",   Sys->DMDIR | 8r555, Qfoundvalues));
+    tree.create(Qroot, dir("status",        8r760, Qstatus));
+    tree.create(Qroot, dir("rpcfindnode",   8r760, Qfindnode));
+    tree.create(Qroot, dir("rpcfindvalue",  8r760, Qfindvalue));
+    tree.create(Qroot, dir("rpcstore",      8r220, Qstore));
+    tree.create(Qroot, dir("rpcping",       8r760, Qping));
+    tree.create(Qroot, dir("stats",         8r760, Qstats));
+    tree.create(Qroot, dir("localstore",    8r760, Qlocalstore));
+    tree.create(Qroot, dir("ourstore",      8r760, Qourstore));
+    tree.create(Qroot, dir("contacts",      8r760, Qcontacts));
+    tree.create(Qroot, dir("node",          8r760, Qnode));
 }
 
 loadmodules()
@@ -195,6 +217,9 @@ init(nil: ref Draw->Context, args: list of string)
     (tree, navop) = nametree->start();
     nav = Navigator.new(navop);
     (tchan, srv) := Styxserver.new(fds[0], nav, Qroot);
+    # prepare find results table
+    findresults = hashtable->new(HASHSIZE, array [0] of byte);
+    createtree();
 
     # start dht
     fd := sys->open(bootstrapfile, Sys->OREAD);
@@ -219,19 +244,6 @@ init(nil: ref Draw->Context, args: list of string)
         sys->fprint(stderr, "dht:fatal:%r");
         raise sys->sprint("fail:dht:%r");
     }
-
-    # TODO: fix permissions
-    # create our file tree
-    tree.create(Qroot, dir(".", Sys->DMDIR | 8r555, Qroot));
-    tree.create(Qroot, dir("status",        8r764, Qstatus));
-    tree.create(Qroot, dir("findnode",      8r764, Qfindnode));
-    tree.create(Qroot, dir("findvalue",     8r764, Qfindvalue));
-    tree.create(Qroot, dir("store",         8r764, Qstore));
-    tree.create(Qroot, dir("ping",          8r764, Qping));
-    tree.create(Qroot, dir("stats",         8r764, Qstats));
-    tree.create(Qroot, dir("localstore",    8r764, Qlocalstore));
-    tree.create(Qroot, dir("contacts",      8r764, Qcontacts));
-    tree.create(Qroot, dir("node",          8r764, Qnode));
 
     # start server message processing
     spawn serverloop(tchan, srv);
@@ -278,19 +290,7 @@ initwithdht(newlocal: ref Local, mountpt: string, flags: int, debug: int)
     (tree, navop) = nametree->start();
     nav = Navigator.new(navop);
     (tchan, srv) := Styxserver.new(fds[0], nav, Qroot);
-
-    # TODO: fix permissions
-    # create our file tree
-    tree.create(Qroot, dir(".", Sys->DMDIR | 8r555, Qroot));
-    tree.create(Qroot, dir("status",        8r764, Qstatus));
-    tree.create(Qroot, dir("findnode",      8r764, Qfindnode));
-    tree.create(Qroot, dir("findvalue",     8r764, Qfindvalue));
-    tree.create(Qroot, dir("store",         8r764, Qstore));
-    tree.create(Qroot, dir("ping",          8r764, Qping));
-    tree.create(Qroot, dir("stats",         8r764, Qstats));
-    tree.create(Qroot, dir("localstore",    8r764, Qlocalstore));
-    tree.create(Qroot, dir("contacts",      8r764, Qcontacts));
-    tree.create(Qroot, dir("node",          8r764, Qnode));
+    createtree();
 
     # start server message processing
     spawn serverloop(tchan, srv);
@@ -379,6 +379,8 @@ handlemsg(gm: ref Styx->Tmsg, srv: ref Styxserver, nil: ref Tree): string
                 answer = getstats(local);
             Qlocalstore =>
                 answer = storetext(local.store);
+            Qourstore =>
+                answer = storetext(local.ourstore);
             Qnode =>
                 answer = (ref local.node).text() + "\n";
             Qcontacts =>
@@ -400,40 +402,56 @@ handlemsg(gm: ref Styx->Tmsg, srv: ref Styxserver, nil: ref Tree): string
             result := "";
             case fid.path {
                 Qfindnode =>
-                    key := Key.parse(string m.data);
-                    if (key == nil)
-                        raise "fail:bad key" + string m.data;
-                    node := local.dhtfindnode(*key, nil);
+                    node := local.dhtfindnode(getkey(m.data), nil);
                     if (node != nil)
                         result = "Node found! " + node.text() + "\n";
                     else
                         result = "Nothing was found\n";
                 Qfindvalue =>
-                    key := Key.parse(string m.data);
-                    if (key == nil)
-                        raise "fail:bad key:" + string m.data;
-                    items := local.dhtfindvalue(*key);
+                    items := local.dhtfindvalue(getkey(m.data));
+                    keystr := string m.data[:Bigkey->BB*2];
+                    # fill the foundvalues dir with results
+                    rootqid := Qlastfolder;
+                    tree.create(Qfoundvalues, dir(keystr, Sys->DMDIR | 8r760, Qlastfolder++));
                     if (items != nil)
                     {
-                        result = "Something found:\n";
+                        idx := 0;
                         for (tail := items; tail != nil; tail = tl tail)
-                            result += "\t" + string (hd tail).data + "\n";
+                        {
+                            # remember it so we can later retreive it (see Open) or delete it
+                            findresults.insert(string Qlastfolder, (hd tail).data);
+                            entry := dir(string idx++, 8r760, Qlastfolder++);
+                            entry.mtime = (hd tail).publishtime;
+                            entry.length = big len (hd tail).data;
+                            tree.create(rootqid, entry);
+                        }
+                        result = tree.getpath(rootqid);
                     }
                     else
-                        result = "Nothing was found\n";
+                        result = "<null>";
                 Qstore =>
-                    hdata := array of byte m.data;
-                    keydata := array [keyring->SHA1dlen] of byte;
-                    keyring->sha1(hdata, len hdata, keydata, nil);
-                    key := Key(keydata[:Bigkey->BB]);
-                    local.dhtstore(key, hdata);
-                    result = "Stored by " + key.text();
+                    # fire rpc on clunk, see below
+                    if (int m.offset < 0)
+                        return Eoffset;
+                    # extend the fid.data if needed
+                    upperbound := int m.offset + len m.data;
+                    if (upperbound > len fid.data)
+                    {
+                        newdata := array [upperbound] of byte;
+                        newdata[:] = fid.data[:];
+                        fid.data = newdata;
+                    }
+                    # store the data in fid.data
+                    fid.data[int m.offset:] = m.data[:];
+                    # prevent this function to process normally
+                    srv.reply(ref Rmsg.Write(m.tag, len m.data));
+                    return nil;
                 Qping =>
-                    id := Key.parse(string m.data);
-                    node := local.contacts.getnode(*id);
-                    if (id == nil || node == nil)
-                        raise "fail:bad key";
-                    rtt := local.dhtping(*id);
+                    key := getkey(m.data);
+                    node := local.contacts.getnode(key);
+                    if (node == nil)
+                        raise "fail:node not found";
+                    rtt := local.dhtping(key);
                     if (rtt > 0)
                         result = "Ping success!\nGot answer in " + string rtt + " ms\n";
                     else
@@ -450,6 +468,40 @@ handlemsg(gm: ref Styx->Tmsg, srv: ref Styxserver, nil: ref Tree): string
         }
         # now we have the query result in fid.data, continue happily
         srv.reply(ref Rmsg.Write(m.tag, len m.data));
+    Open =>
+        fid := srv.open(m);
+        if (fid == nil)
+            return nil;
+        # check if we already have some data for that open
+        data := findresults.find(string fid.path);
+        # store for later retreival
+        if (data != nil)
+            fid.data = data;
+    Clunk =>
+        fid := srv.getfid(m.fid);
+        if (fid == nil)
+            return Ebadfid;
+
+        case fid.path {
+            Qstore =>
+                # actually fire dhtstore
+                hdata := fid.data;
+                keydata := array [keyring->SHA1dlen] of byte;
+                keyring->sha1(hdata, len hdata, keydata, nil);
+                key := Key(keydata[:Bigkey->BB]);
+                local.dhtstore(key, hdata);
+        }
+        srv.clunk(m);
+    Remove =>
+        fid := srv.getfid(m.fid);
+        if (fid == nil)
+            return Ebadfid;
+        # allow to delete only findvalue result folders
+        if (fid.path < Qfirstfolder)
+            return Eperm;
+        tree.remove(fid.path);
+        srv.delfid(fid);
+        srv.reply(ref Rmsg.Remove(m.tag));
     * =>
         srv.default(gm);
     }
@@ -481,6 +533,18 @@ destroy()
 }
 
 # some helper functions
+
+getkey(data: array of byte): Bigkey->Key
+{
+    keystr := string data;
+    if (len keystr < Bigkey->BB*2)
+        raise "fail:bad key:" + keystr;
+    keystr = keystr[:Bigkey->BB*2];
+    key := Key.parse(keystr);
+    if (key == nil)
+        raise "fail:bad key" + keystr;
+    return *key;
+}
 
 storetext(store: ref HashTable[list of ref StoreItem]): string
 {
