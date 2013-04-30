@@ -104,7 +104,7 @@ clean(verbose: int): int
     if (verbose)
         sys->print("Cleaning local...\n");
     contacts := ref Contacts(array [1] of ref Bucket, local);
-    contacts.buckets[0] = ref Bucket(array [0] of Node,
+    contacts.buckets[0] = ref Bucket(nil,
     Key(array[BB] of { * => byte 0 }),
     Key(array[BB] of { * => byte 16rFF }),
     daytime->now());
