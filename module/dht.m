@@ -25,7 +25,7 @@ Dht: module
     REPLICATE_TIME: con 3600;   # 3600
     REPUBLISH_TIME: con 60;     # 86400
     RANDOMNESS:     con 1000;   # 1000
-    WAIT_TIME:      con 1000;   # 2000
+    WAIT_TIME:      con 2000;   # 2000
     TKEEP_ALIVE:    con 10000;  # ?
     MAXRETRANSMIT:  con 5;
 
@@ -241,6 +241,8 @@ Dht: module
             contactsprocpid, storeprocpid: int;
         logfd: ref Sys->FD;
         conn: Sys->Connection;
+        tchan: chan of (array of byte, int, int);
+        rchan: chan of array of byte;
 
         serverlastseenalive: int;
 
@@ -262,9 +264,9 @@ Dht: module
         processrmsg: fn(nil: self ref Local, buf: array of byte);
         processtmsg: fn(nil: self ref Local, buf: array of byte, raddr: string);
         # actually sends a message to the specified address
-        sendmsg: fn(nil: self ref Local, addr: string, data: array of byte);
+        sendmsg: fn(nil: self ref Local, addr: string, data: array of byte, retransmits: int);
         # send the message and setup callback with given channel
-        sendtmsg: fn(nil: self ref Local, n: ref Node, msg: ref Tmsg): chan of ref Rmsg;
+        sendtmsg: fn(nil: self ref Local, n: ref Node, msg: ref Tmsg, retransmits: int): chan of ref Rmsg;
         # same as above, but without callbacks
         sendrmsg: fn(nil: self ref Local, prvaddr: string, pubaddr: string, msg: ref Rmsg);
         # log some data

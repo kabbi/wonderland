@@ -21,6 +21,8 @@ include "sort.m";
     sort: Sort;
 include "lists.m";
     lists: Lists;
+include "rudp.m";
+    rudp: Rudp;
 include "hashtable.m";
     hashtable: Hashtable;
     HashTable: import hashtable;
@@ -113,6 +115,10 @@ init()
     crc = load Crc Crc->PATH;
     if (crc == nil)
         badmodule(Crc->PATH);
+    rudp = load Rudp Rudp->PATH;
+    if (rudp == nil)
+        badmodule(Rudp->PATH);
+    rudp->init();
     bigkey->init();
     ip->init();
 }
@@ -1079,15 +1085,9 @@ killpid(pid: int)
 Local.process(l: self ref Local)
 {
     l.processpid = sys->pctl(0, nil);
-    # turn on headers mode
-    sys->fprint(l.conn.cfd, "headers4");
-
-    # reading incoming packets
-    l.conn.dfd = sys->open(l.conn.dir + "/data", Sys->ORDWR);
     while (1)
     {
-        buffer := array [MAXRPC + Udp4hdrlen] of byte;
-        bytesread := sys->read(l.conn.dfd, buffer, len buffer);
+        buffer := <-l.rchan;
         l.logevent("process", "New incoming message");
 
         hdr := Udphdr.unpack(buffer[:Udp4hdrlen], Udp4hdrlen);
@@ -1097,9 +1097,9 @@ Local.process(l: self ref Local)
         l.logevent("process", "remote addr: " + raddr);
         buffer = buffer[Udp4hdrlen:];
 
-        if (bytesread <= 0)
+        if (buffer == nil || len buffer == 0)
             raise sys->sprint("fail:Local.process:read error:%r");
-        if (bytesread < H + Udp4hdrlen)
+        if (len buffer < H)
         {
             l.stats.processerrors++;
             l.logevent("process", "Incoming packet too short, ignoring");
@@ -1390,7 +1390,7 @@ Local.storeproc(l: self ref Local)
         }
     }
 }
-Local.sendmsg(l: self ref Local, addr: string, data: array of byte)
+Local.sendmsg(l: self ref Local, addr: string, data: array of byte, retransmits: int)
 {
     buffer := array [len data + Udp4hdrlen] of byte;
 
@@ -1401,14 +1401,12 @@ Local.sendmsg(l: self ref Local, addr: string, data: array of byte)
     hdr.pack(buffer, Udp4hdrlen);
 
     buffer[Udp4hdrlen:] = data[:];
-    byteswritten := sys->write(l.conn.dfd, buffer, len buffer);
-    if (byteswritten != len buffer)
-    {
-        l.stats.senderrors++;
-        l.logevent("sendmsg", sys->sprint("Error while sending data: %r"));
-    }
+
+    # TODO: fix timeout here
+    # allow for ~2 times to retransmit the packet
+    l.tchan <-= (buffer, WAIT_TIME / 4, retransmits);
 }
-Local.sendtmsg(l: self ref Local, n: ref Node, msg: ref Tmsg): chan of ref Rmsg
+Local.sendtmsg(l: self ref Local, n: ref Node, msg: ref Tmsg, retransmits: int): chan of ref Rmsg
 {
     if (msg.targetid.eq(l.node.id))
     {
@@ -1426,9 +1424,9 @@ Local.sendtmsg(l: self ref Local, n: ref Node, msg: ref Tmsg): chan of ref Rmsg
 
     buf := msg.pack();
     l.callbacksch <-= (QAddCallback, msg.uid.text(), ch);
-    l.sendmsg(n.pubaddr, buf);
+    l.sendmsg(n.pubaddr, buf, retransmits);
     if (n.pubaddr != n.prvaddr)
-        l.sendmsg(n.prvaddr, buf);
+        l.sendmsg(n.prvaddr, buf, retransmits);
     return ch;
 }
 Local.sendrmsg(l: self ref Local, prvaddr: string, pubaddr: string, msg: ref Rmsg)
@@ -1445,14 +1443,15 @@ Local.sendrmsg(l: self ref Local, prvaddr: string, pubaddr: string, msg: ref Rms
     l.logevent("sendrmsg", "Dump: " + msg.text());
 
     buf := msg.pack();
-    l.sendmsg(pubaddr, buf);
+    l.sendmsg(pubaddr, buf, MAXRETRANSMIT);
     if (pubaddr != prvaddr)
-       l.sendmsg(prvaddr, buf);
+       l.sendmsg(prvaddr, buf, MAXRETRANSMIT);
 }
 Local.destroy(l: self ref Local)
 {
     # just kill everybody
     l.logevent("destroy", "Quitting...");
+    l.tchan <-= (array [0] of byte, 0, 0);
     killpid(l.processpid);
     killpid(l.timerpid);
     killpid(l.callbacksprocpid);
@@ -1636,51 +1635,51 @@ timer(ch: chan of int, timeout: int)
 Local.queryforrmsg(l: self ref Local, target: ref Node, msg: ref Tmsg, retransmits: int, callroutine: string): (int, ref Rmsg) 
 # (rtt, answer)
 {
-    for (i := 0; i < retransmits + 1; i++)
-    {
-        ch := l.sendtmsg(target, msg);
-        sendtime := sys->millisec();
-        killerch := chan of int;
-        spawn timer(killerch, WAIT_TIME);
+    ch := l.sendtmsg(target, msg, retransmits);
+    sendtime := sys->millisec();
+    killerch := chan of int;
+    spawn timer(killerch, WAIT_TIME);
 
-        stop := 0;
-        answer: ref Rmsg;
-        rtt := QTimeOut;
-        alt {
-            answer = <-ch =>
-                spawn timerreaper(killerch);
-                if (tagof msg != tagof answer)
-                {
-                    l.logevent(callroutine, "Received answer, but not the desired message format");
-                    answer = nil;
-                    break;
-                }
-                if (!answer.senderid.eq(target.id))
-                {
-                    l.logevent(callroutine, "Received answer from unexpected node");
-                    answer = nil;
-                    break;
-                }
-                rtt = sys->millisec() - sendtime;
-                l.stats.totalrtt += rtt;
-                l.stats.answersgot++;
-                stop = 1;
-            <-killerch =>
-                l.logevent(callroutine, "Waiting timeout");
+    stop := 0;
+    answer: ref Rmsg;
+    rtt := QTimeOut;
+    alt {
+        answer = <-ch =>
+            spawn timerreaper(killerch);
+            if (tagof msg != tagof answer)
+            {
+                l.logevent(callroutine, "Received answer, but not the desired message format");
                 answer = nil;
-        }
-        l.callbacksch <-= (QRemoveCallback, msg.uid.text(), nil);
-        if (stop == 1)
-            return (rtt, answer);
-        else if (i < retransmits && !ispublic(target))
-        {
-            # TODO: Make it async?
-            l.logevent(callroutine, sys->sprint("Direct connect failed, trying to establish randezvous at: %s", target.srvaddr));
-            isdirect := l.askrandezvous(target.pubaddr, target.srvaddr, target.id, target.srvid);
-            if (isdirect != RSuccess)
-                l.logevent(callroutine, sys->sprint("fail:Seems that randezvous failed"));
-        }
+                break;
+            }
+            if (!answer.senderid.eq(target.id))
+            {
+                l.logevent(callroutine, "Received answer from unexpected node");
+                answer = nil;
+                break;
+            }
+            rtt = sys->millisec() - sendtime;
+            l.stats.totalrtt += rtt;
+            l.stats.answersgot++;
+            stop = 1;
+        <-killerch =>
+            l.logevent(callroutine, "Waiting timeout");
+            answer = nil;
     }
+    l.callbacksch <-= (QRemoveCallback, msg.uid.text(), nil);
+    if (stop == 1)
+        return (rtt, answer);
+    else if (!ispublic(target) && retransmits != 0)
+    {
+        # TODO: Make it async?
+        l.logevent(callroutine, sys->sprint("Direct connect failed, trying to establish randezvous at: %s", target.srvaddr));
+        isdirect := l.askrandezvous(target.pubaddr, target.srvaddr, target.id, target.srvid);
+        if (isdirect != RSuccess)
+            l.logevent(callroutine, sys->sprint("fail:Seems that randezvous failed"));
+        # try again
+        return l.queryforrmsg(target, msg, 0, callroutine);
+    }
+
     l.stats.unanswerednodes++;
     l.logevent(callroutine, "After " + string MAXRETRANSMIT + " attempts send failed");
     return (QTimeOut, nil);
@@ -1794,6 +1793,14 @@ start(localaddr: string, bootstrap: array of ref Node, id: Key, logfd: ref Sys->
     (err, c) := sys->announce("udp!*!" + string localport);
     if (err != 0)
         return nil;
+    # turn on headers mode
+    sys->fprint(c.cfd, "headers4");
+    # reading incoming packets
+    c.dfd = sys->open(c.dir + "/data", Sys->ORDWR);
+    # create transmit channel
+    tchan := chan of (array of byte, int, int);
+    # and create our reliable udp helper
+    rchan := rudp->new(c.dfd, tchan);
 
     ch := chan of ref Rmsg;
     storeitem := list of {ref StoreItem(array [0] of byte, 0, 0)};
@@ -1807,7 +1814,7 @@ start(localaddr: string, bootstrap: array of ref Node, id: Key, logfd: ref Sys->
 
     node := Node(id, localaddr, localaddr, localaddr, id);
     server := ref Local(node, (localip, localport), contacts, store, localstore, stats, nil,
-        callbacksch, hashtable->new(CALLBACKSIZE, ch), storech, contactsch, 0, 0, 0, 0, 0, logfd, c, 0);
+        callbacksch, hashtable->new(CALLBACKSIZE, ch), storech, contactsch, 0, 0, 0, 0, 0, logfd, c, tchan, rchan, 0);
     server.contacts.local = server;
 
     spawn server.process();
