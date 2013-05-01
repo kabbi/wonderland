@@ -108,6 +108,7 @@ TARG=\
 	registries.dis\
 	rfc822.dis\
 	riff.dis\
+	rudp.dis\
 	scoretable.dis\
 	scsiio.dis\
 	secstore.dis\

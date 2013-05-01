@@ -5,5 +5,6 @@ menu Wonderland Cheshire {create-dev-shell cheshire.sh}
 menu Wonderland Dht {create-dev-shell dht.sh}
 menu Wonderland Dhttest {create-dev-shell dhttest.sh}
 menu Wonderland Dhtfs {create-dev-shell dhtfs.sh}
+menu Wonderland Rudp {create-dev-shell rudp.sh}
 wmrun wm/task
 wmrun wm/man
