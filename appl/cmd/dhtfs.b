@@ -127,6 +127,7 @@ createtree()
     tree.create(Qroot, dir("ourstore",      8r760, Qourstore));
     tree.create(Qroot, dir("contacts",      8r760, Qcontacts));
     tree.create(Qroot, dir("node",          8r760, Qnode));
+    findresults = hashtable->new(HASHSIZE, array [0] of byte);
 }
 
 loadmodules()
@@ -218,7 +219,6 @@ init(nil: ref Draw->Context, args: list of string)
     nav = Navigator.new(navop);
     (tchan, srv) := Styxserver.new(fds[0], nav, Qroot);
     # prepare find results table
-    findresults = hashtable->new(HASHSIZE, array [0] of byte);
     createtree();
 
     # start dht
