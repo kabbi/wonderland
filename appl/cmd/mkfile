@@ -55,6 +55,7 @@ TARG=\
 	date.dis\
 	dbfs.dis\
 	dd.dis\
+	dhtfs.dis\
 	dhttest.dis\
 	dial.dis\
 	diff.dis\
