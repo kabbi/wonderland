@@ -254,7 +254,7 @@ mountedon: string;
 
 cheshirelog(level: int, msg: string)
 {
-    if (level < verbosity)
+    if (level <= verbosity)
         sys->fprint(stderr, "%s\n", msg);
 }
 
@@ -302,8 +302,8 @@ startdht()
         raise sys->sprint("fail:dht:%r");
     }
     cheshirelog(VLInformation, "Dht started");
-    local.usermsghandler = chan of (ref Dht->Tmsg.User);
-    spawn dhtmsghandler();
+    local.eventlistener = chan of (ref Dht->Event);
+    spawn dhteventlistener();
 }
 
 startdhtfs()
@@ -324,6 +324,8 @@ init(nil: ref Draw->Context, args: list of string)
         raise "fail:usage: cheshire <local addr> <neighbours file> [verbose level]";
     # loading modules
     sys = load Sys Sys->PATH;
+    # init stderr now as we can fail starting from this point
+    stderr = sys->fildes(2);
     
     styx = load Styx Styx->PATH;
     if (styx == nil)
@@ -370,7 +372,6 @@ init(nil: ref Draw->Context, args: list of string)
     localaddr = hd args;
     # find out the current user to make it the owner of all folders
     user = getcuruser();
-    stderr = sys->fildes(2);
     mainpid = sys->pctl(0, nil);
     mountedon = "/wonderland";
 
@@ -666,65 +667,99 @@ synthnavigator(op: ref styxservers->Navop): int
     return 0;
 }
 
+# Dht events handling
+
+dhteventlistener()
+{
+    while (1)
+    {
+        event := <-local.eventlistener;
+        pick e := event {
+            NodeAdded or
+            NodeRemoved =>
+                ; # ignore
+            RendezvousServerChanged =>
+                ; # ignore
+            PublicAddrChanged =>
+                ; # ignore
+            StoreItemAdded =>
+                ; # start process
+            StoreItemExpired =>
+                ; # kill process
+            StoreItemReplicated or
+            StoreItemRepublished =>
+                ; # maybe tell the program about it?
+            DhtStarted or DhtDestroyed =>
+                ; # we are really happy but can do nothing
+            QueryForRmsgTimeouted =>
+                ; # how can we fix that?
+                # test connection?
+                # find relay server among existing ones?
+                # store help request somewhere in the wonderland?
+            UserMessageReceived =>
+                dhtmsghandler(e.msg);
+            * =>
+                cheshirelog(VLError, "Unhandled event received from DHT: " +
+                    string tagof event);
+        }
+    }
+}
+
 # Cheshire styx server handling, common functions
 
 styxclients: ref Hashtable->HashTable[ref Sys->FD];     # key - node id, value - server fd
 styxanswers: ref Hashtable->HashTable[ref (Dht->Rmsg).User];        # key - node id, value - last sent answer for this client
 
-dhtmsghandler()
+dhtmsghandler(msg: ref (Dht->Tmsg).User)
 {
-    while (1)
+    cheshirelog(VLInformation, "Incoming msg from " + (ref msg.sender).text());
+    # strip the destination from the message
+    if (len msg.data <= Bigkey->BB)
     {
-        msg := <-local.usermsghandler;
-        cheshirelog(VLInformation, "Incoming msg from " + (ref msg.sender).text());
-        # strip the destination from the message
-        if (len msg.data <= Bigkey->BB)
-        {
-            cheshirelog(VLError, "Message too short, ignored");
-            continue;
-        }
-        styxservid := Key(msg.data[:Bigkey->BB]);
-        msgdata := msg.data[Bigkey->BB:];
-        clientid := msg.sender.id.text() + styxservid.text();
-        # firstly clone the server for the client, if it's his first message
-        clientfd := styxclients.find(clientid);
-        if (clientfd == nil)
-        {
-            styxservfd := runningstyxservers.find(styxservid.text());
-            if (styxservfd == nil)
-            {
-                cheshirelog(VLError, "The running styx server with id " + styxservid.text() + " does not exist");
-                continue;
-            }
-            cheshirelog(VLInformation, "Cloning server for this client");
-            clientfd = cloneserver(styxservfd);
-            styxclients.insert(clientid, clientfd);
-        }
-        # check if we already have an answer
-        answer := styxanswers.find(clientid);
-        if (answer != nil)
-        {
-            # if we already have the answer with the same tag, reply with it
-            if (answer.uid.eq(msg.uid))
-            {
-                local.sendrmsg(msg.sender.prvaddr, msg.sender.pubaddr, answer);
-                cheshirelog(VLInformation, "Answered with stored result");
-                continue;
-            }
-            styxanswers.delete(clientid);
-        }
-        # if ok, pass the data to styxserver
-        cheshirelog(VLInformation, "Passing packet to styxserver");
-        buf := array [Styx->MAXRPC] of byte;
-        sys->write(clientfd, msgdata, len msgdata);
-        readbytes := sys->read(clientfd, buf, len buf);
-        answer = ref (Dht->Rmsg).User(msg.uid, local.node.id, msg.sender.id, buf[:readbytes]);
-        # wrap with dht message and return to caller
-        local.sendrmsg(msg.sender.prvaddr, msg.sender.pubaddr, answer);
-        # store the answer to reply with it in case of retransmits
-        styxanswers.insert(clientid, answer);
-        cheshirelog(VLInformation, "Answered");
+        cheshirelog(VLError, "Message too short, ignored");
+        return;
     }
+    styxservid := Key(msg.data[:Bigkey->BB]);
+    msgdata := msg.data[Bigkey->BB:];
+    clientid := msg.sender.id.text() + styxservid.text();
+    # firstly clone the server for the client, if it's his first message
+    clientfd := styxclients.find(clientid);
+    if (clientfd == nil)
+    {
+        styxservfd := runningstyxservers.find(styxservid.text());
+        if (styxservfd == nil)
+        {
+            cheshirelog(VLError, "The running styx server with id " + styxservid.text() + " does not exist");
+            return;
+        }
+        cheshirelog(VLInformation, "Cloning server for this client");
+        clientfd = cloneserver(styxservfd);
+        styxclients.insert(clientid, clientfd);
+    }
+    # check if we already have an answer
+    answer := styxanswers.find(clientid);
+    if (answer != nil)
+    {
+        # if we already have the answer with the same tag, reply with it
+        if (answer.uid.eq(msg.uid))
+        {
+            local.sendrmsg(msg.sender.prvaddr, msg.sender.pubaddr, answer);
+            cheshirelog(VLInformation, "Answered with stored result");
+            return;
+        }
+        styxanswers.delete(clientid);
+    }
+    # if ok, pass the data to styxserver
+    cheshirelog(VLInformation, "Passing packet to styxserver");
+    buf := array [Styx->MAXRPC] of byte;
+    sys->write(clientfd, msgdata, len msgdata);
+    readbytes := sys->read(clientfd, buf, len buf);
+    answer = ref (Dht->Rmsg).User(msg.uid, local.node.id, msg.sender.id, buf[:readbytes]);
+    # wrap with dht message and return to caller
+    local.sendrmsg(msg.sender.prvaddr, msg.sender.pubaddr, answer);
+    # store the answer to reply with it in case of retransmits
+    styxanswers.insert(clientid, answer);
+    cheshirelog(VLInformation, "Answered");
 }
 
 # Cheshire styx server handling, mounting side

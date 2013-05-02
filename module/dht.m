@@ -121,6 +121,35 @@ Dht: module
         logentries: int;                    # the number of log entries emitted
     };
 
+    Event: adt {
+        pick {
+        UserMessageReceived =>
+            msg: ref Tmsg.User;
+        NodeAdded or
+        NodeRemoved =>
+            node: ref Node;
+        StoreItemAdded or
+        StoreItemExpired or
+        StoreItemReplicated or
+        StoreItemRepublished =>
+            item: ref StoreItem;
+        DhtStarted or
+        DhtDestroyed =>
+            # no data
+        QueryForRmsgTimeouted =>
+            target: ref Node;
+            msg: ref Tmsg;
+            retransmits: int;
+            callroutine: string;
+        RendezvousServerChanged =>
+            oldsrv: string;
+            newsrv: string;
+        PublicAddrChanged =>
+            oldaddr: string;
+            newaddr: string;
+        }
+    };
+
     # DHT message handlers
     Tmsg: adt {
         uid: Key;
@@ -229,7 +258,7 @@ Dht: module
         ourstore: ref HashTable[list of ref StoreItem];
         # stats object, publically usable
         stats: ref Stats;
-        usermsghandler: chan of (ref Tmsg.User);
+        eventlistener: chan of ref Event;
 
         # private data and methods
         callbacksch: chan of (int, string, chan of ref Rmsg);
@@ -284,6 +313,8 @@ Dht: module
         askrandezvous: fn(nil: self ref Local, nodeaddr, srvaddr: string, nodeid, srvid: Key): int;
         queryforrmsg: fn(nil: self ref Local, node: ref Node, msg: ref Tmsg, retransmits: int, callroutine: string): (int, ref Rmsg);
         changeserver: fn(nil: self ref Local);
+        # events handling
+        postevent: fn(nil: self ref Local, event: ref Event);
     };
 
     init:   fn();

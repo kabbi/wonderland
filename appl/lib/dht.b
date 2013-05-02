@@ -1085,6 +1085,8 @@ killpid(pid: int)
 Local.process(l: self ref Local)
 {
     l.processpid = sys->pctl(0, nil);
+    # this is actually senseless, but anyway
+    l.postevent(ref Event.DhtStarted());
     while (1)
     {
         buffer := <-l.rchan;
@@ -1172,8 +1174,7 @@ Local.processtmsg(l: self ref Local, buf: array of byte, raddr: string)
                 sender.pubaddr = raddr;
                 answer = ref Rmsg.Observe(m.uid, l.node.id, sender.id, raddr);
             User =>
-                if (l.usermsghandler != nil)
-                    l.usermsghandler <-= m;
+                l.postevent(ref Event.UserMessageReceived(m));
                 shouldadd = 0;
         }
 
@@ -1215,6 +1216,11 @@ Local.processrmsg(l: self ref Local, buf: array of byte)
             l.stats.processerrors++;
             l.logevent("precessrmsg", "Exception cought while processing Rmsg: " + e);
     }
+}
+Local.postevent(l: self ref Local, event: ref Event)
+{
+    if (l.eventlistener != nil)
+        l.eventlistener <-= event;
 }
 Local.changeserver(l: self ref Local)
 {
@@ -1270,6 +1276,7 @@ Local.timer(l: self ref Local)
                     l.logevent("timer", "Replicating item with key: " + key.text());
                     item.lastupdate = curtime;
                     storehelper(l, key, item);
+                    l.postevent(ref Event.StoreItemReplicated(item));
                 }
                 # expire stage
                 if (curtime - item.publishtime > EXPIRE_TIME)
@@ -1277,6 +1284,7 @@ Local.timer(l: self ref Local)
                     l.logevent("timer", "Item with key " + key.text() + " expired, removing");
                     l.storech <-= ((hd rest).key, item, nil, l.store);
                     l.stats.expiredentries++;
+                    l.postevent(ref Event.StoreItemExpired(item));
                 }
             }
         }
@@ -1295,7 +1303,8 @@ Local.timer(l: self ref Local)
                     l.logevent("timer", "Republishing item with key: " + key.text());
                     item.publishtime = daytime->now();
                     item.lastupdate = daytime->now();
-                    storehelper(l, key, item);       
+                    storehelper(l, key, item);
+                    l.postevent(ref Event.StoreItemRepublished(item));
                 }
             }
         }
@@ -1310,8 +1319,11 @@ Local.timer(l: self ref Local)
             (success, ans) := l.queryforrmsg(srv, msg, MAXRETRANSMIT, "timer");
             if (success  <= 0 || ans == nil)
             {
+                oldsrv := l.node.srvaddr;
                 l.changeserver();
                 l.dhtfindnode(l.node.id, nil);
+                l.postevent(ref Event.RendezvousServerChanged(oldsrv,
+                    l.node.srvaddr));
                 continue;
             }
             observedaddr: string;
@@ -1321,6 +1333,8 @@ Local.timer(l: self ref Local)
             }
             if (observedaddr != l.node.pubaddr)
             {
+                l.postevent(ref Event.PublicAddrChanged(l.node.pubaddr,
+                    observedaddr));
                 l.node.pubaddr = observedaddr;
                 l.dhtfindnode(l.node.id, nil);
             }
@@ -1353,8 +1367,10 @@ Local.contactsproc(l: self ref Local)
         case (action) {
             QAddContact =>
                 l.contacts.addcontact(node);
+                l.postevent(ref Event.NodeAdded(node));
             QRemoveContact =>
                 l.contacts.removecontact(node.id);
+                l.postevent(ref Event.NodeRemoved(node));
         }
     }
 }
@@ -1385,6 +1401,9 @@ Local.storeproc(l: self ref Local)
                 continue;
             }
             newitemlist := lists->delete(item, items);
+            # if we didn't have it already
+            if (len newitemlist == len items)
+                l.postevent(ref Event.StoreItemAdded(item));
             table.delete(key);
             table.insert(key, replacement :: newitemlist);
         }
@@ -1457,6 +1476,7 @@ Local.destroy(l: self ref Local)
     killpid(l.callbacksprocpid);
     killpid(l.contactsprocpid);
     killpid(l.storeprocpid);
+    l.postevent(ref Event.DhtDestroyed());
 }
 
 Local.setlogfd(l: self ref Local, fd: ref Sys->FD)
@@ -1682,6 +1702,7 @@ Local.queryforrmsg(l: self ref Local, target: ref Node, msg: ref Tmsg, retransmi
 
     l.stats.unanswerednodes++;
     l.logevent(callroutine, "After " + string MAXRETRANSMIT + " attempts send failed");
+    l.postevent(ref Event.QueryForRmsgTimeouted(target, msg, retransmits, callroutine));
     return (QTimeOut, nil);
 }
 Local.dhtping(l: self ref Local, id: Key): int
