@@ -1276,7 +1276,7 @@ Local.timer(l: self ref Local)
                     l.logevent("timer", "Replicating item with key: " + key.text());
                     item.lastupdate = curtime;
                     storehelper(l, key, item);
-                    l.postevent(ref Event.StoreItemReplicated(item));
+                    l.postevent(ref Event.StoreItemReplicated(key, item));
                 }
                 # expire stage
                 if (curtime - item.publishtime > EXPIRE_TIME)
@@ -1284,7 +1284,7 @@ Local.timer(l: self ref Local)
                     l.logevent("timer", "Item with key " + key.text() + " expired, removing");
                     l.storech <-= ((hd rest).key, item, nil, l.store);
                     l.stats.expiredentries++;
-                    l.postevent(ref Event.StoreItemExpired(item));
+                    l.postevent(ref Event.StoreItemExpired(key, item));
                 }
             }
         }
@@ -1304,7 +1304,7 @@ Local.timer(l: self ref Local)
                     item.publishtime = daytime->now();
                     item.lastupdate = daytime->now();
                     storehelper(l, key, item);
-                    l.postevent(ref Event.StoreItemRepublished(item));
+                    l.postevent(ref Event.StoreItemRepublished(key, item));
                 }
             }
         }
@@ -1403,7 +1403,7 @@ Local.storeproc(l: self ref Local)
             newitemlist := lists->delete(item, items);
             # if we didn't have it already
             if (len newitemlist == len items)
-                l.postevent(ref Event.StoreItemAdded(item));
+                l.postevent(ref Event.StoreItemAdded(*Key.parse(key), item));
             table.delete(key);
             table.insert(key, replacement :: newitemlist);
         }

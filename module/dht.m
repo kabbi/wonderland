@@ -132,6 +132,7 @@ Dht: module
         StoreItemExpired or
         StoreItemReplicated or
         StoreItemRepublished =>
+            key: Key;
             item: ref StoreItem;
         DhtStarted or
         DhtDestroyed =>
