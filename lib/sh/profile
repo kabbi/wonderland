@@ -3,7 +3,7 @@
 bind /locale/Moscow /locale/timezone
 # this settings are here only to simplify development
 # process, in real world it's really insecure to do so
-bind -a /usr/default /usr/^"{cat /dev/user}
+bind -ac /usr/default /usr/^"{cat /dev/user}
 cd
 
 #start core services
