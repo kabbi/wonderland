@@ -28,6 +28,7 @@ TARG=\
 	debsrc.dis\
 	dir.dis\
 	edit.dis\
+	emu.dis\
 	filename.dis\
 	getauthinfo.dis\
 	keyboard.dis\
