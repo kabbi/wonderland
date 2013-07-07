@@ -32,6 +32,7 @@ START_CMD: con "run emustart.sh";
 STOP_CMD: con "run emustop.sh";
 CONTROL_CHAN_DIR: con "/chan";
 CONTROL_CHAN_FILE: con "emuctl";
+LABEL_FONT: con "/fonts/lucida/unicode.5.font";
 
 NetEmu: module
 {
@@ -48,6 +49,7 @@ Instance: adt {
 	id: int;
 	color: int;
 	point: Point;
+	label: string;
 
 	cmd: string;
 	boottime: int;
@@ -94,8 +96,12 @@ Instance.blink(i: self ref Instance, target: ref Instance, color: int)
 }
 Instance.draw(i: self ref Instance, screen: ref Image)
 {
+	# Draw self
 	screen.ellipse(translate(i.point), INSTANCE_DRAW_RADIUS, INSTANCE_DRAW_RADIUS,
 		1, display.color(Draw->Magenta), ZP);
+	labelpos := translate(centeralign(i.label, labelfont,
+		i.point.add((0, INSTANCE_DRAW_RADIUS))));
+	screen.text(labelpos, fontbg, ZP, labelfont, i.label);
 	# Draw connections
 	for (it := i.connections; it != nil; it = tl it)
 		screen.line(translate(i.point), translate((hd it).point),
@@ -105,21 +111,23 @@ Instance.draw(i: self ref Instance, screen: ref Image)
 		screen.line(translate(i.point), translate((hd iit).target.point),
 			Draw->Endsquare, screen.arrow(15, 15, 4), 1, display.color((hd iit).color), ZP);
 	# Remove expired blinks
-	i.blinks = lists->filter(blinkexpired, i.blinks);
+	i.blinks = lists->filter(blinknotexpired, i.blinks);
 }
 Instance.connectTo(i: self ref Instance, target: ref Instance)
 {
+	return;
 	i.connections = target :: i.connections;
 }
 Instance.disconnect(i: self ref Instance, target: ref Instance)
 {
+	return;
 	i.connections = lists->delete(target, instances);
 }
 
 instances: list of ref Instance;
 
 display: ref Display;
-font: ref Font;
+font, labelfont: ref Font;
 fontbg: ref Image;
 zoom: int;
 base, disp: Point;
@@ -188,6 +196,9 @@ init(ctxt: ref Draw->Context, nil: list of string)
 	font = Font.open(display, "*default*");
 	if (font == nil)
 		error("default font loading failed", "bad font");
+	labelfont = Font.open(display, LABEL_FONT);
+	if (labelfont == nil)
+		error("label font loading failed: " + LABEL_FONT, "bad font");
 
 	# Useful pre-defined images and bgs
 	fontbg = display.newimage(Rect((0, 0), (1, 1)), Draw->RGBA32, 1, Draw->Black);
@@ -213,7 +224,7 @@ init(ctxt: ref Draw->Context, nil: list of string)
 
 	# Main fps generator
 	ticks := chan of int;
-	spawn timer(ticks, 100);
+	spawn timer(ticks, 50);
 
 	connectFrom, connectTo: ref Instance;
 	startDrag: ref Point;
@@ -249,16 +260,6 @@ init(ctxt: ref Draw->Context, nil: list of string)
 				continue;
 
 			point := p.xy.sub(w.image.r.min);
-
-			{
-				pp := point.sub(disp);
-				inst := instancebypoint(pp);
-				if (inst != nil) {
-					for (it := instances; it != nil; it = tl it)
-						if (!Instance.eq(inst, hd it))
-							(hd it).blink(inst, Draw->Green);
-				}
-			}
 
 			# Adding and connection events
 			if (p.buttons & 1) {
@@ -423,6 +424,13 @@ processctlcommand(data: string)
 			target := instancebyid(targetid);
 			if (source != nil && target != nil)
 				source.blink(target, color);
+		"label" =>
+			if (len cmdlist < 2)
+				raise "fail:bad args";
+			sourceid := int hd cmdlist;
+			source := instancebyid(sourceid);
+			if (source != nil)
+				source.label = hd tl cmdlist;
 		* =>
 			raise "fail:unknown command";
 	}
@@ -430,7 +438,13 @@ processctlcommand(data: string)
 
 # Some utility functions
 
-blinkexpired(b: ref BlinkItem): int
+centeralign(str: string, font: ref Font, base: Point): Point
+{
+	width := font.width(str);
+	return base.add((-width / 2, 0));
+}
+
+blinknotexpired(b: ref BlinkItem): int
 {
 	now := sys->millisec();
 	return ((now - b.timestamp) < BLINK_EXPIRE_TIME);
