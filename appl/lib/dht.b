@@ -29,6 +29,9 @@ include "hashtable.m";
 include "bigkey.m";
     bigkey: Bigkey;
     Key: import bigkey;
+include "draw.m";
+include "env.m";
+    env: Env;
 
 include "dht.m";
 
@@ -109,6 +112,9 @@ init()
     hashtable = load Hashtable Hashtable->PATH;
     if (hashtable == nil)
         badmodule(Hashtable->PATH);
+    env = load Env Env->PATH;
+    if (env == nil)
+        badmodule(Env->PATH);
     sort = load Sort Sort->PATH;
     if (sort == nil)
         badmodule(Sort->PATH);
@@ -1394,21 +1400,51 @@ Local.storeproc(l: self ref Local)
         else # add or update it!
         {
             items := table.find(key);
+            bigkey := *Key.parse(key[4:(BB*2+4)]);
             if (items == nil)
             {
                 items = item :: nil;
                 table.insert(key, items);
+                if (table == l.store)
+                    l.postevent(ref Event.StoreItemAdded(bigkey, item));
                 continue;
             }
             newitemlist := lists->delete(item, items);
             # if we didn't have it already
-            if (len newitemlist == len items)
-                l.postevent(ref Event.StoreItemAdded(*Key.parse(key), item));
+            if (table == l.store && len newitemlist == len items)
+                l.postevent(ref Event.StoreItemAdded(bigkey, item));
             table.delete(key);
             table.insert(key, replacement :: newitemlist);
         }
     }
 }
+
+# NetEmu debug code
+debugpacket(target: string, color: int)
+{
+    (nil, targetport) := dialparse(target);
+    if (targetport < 12500)
+        return;
+    sourceid := env->getenv("machid");
+    if (sourceid == nil)
+        return;
+    targetid := string (targetport - 12500);
+    fd := sys->open("/chan/emuctl", Sys->OWRITE);
+    if (fd == nil)
+        return;
+    sys->fprint(fd, "packet %s %s %d", sourceid, targetid, color);
+}
+debuglabel(label: string)
+{
+    sourceid := env->getenv("machid");
+    if (sourceid == nil)
+        return;
+    fd := sys->open("/chan/emuctl", Sys->OWRITE);
+    if (fd == nil)
+        return;
+    sys->fprint(fd, "label %s %s", sourceid, label);
+}
+
 Local.sendmsg(l: self ref Local, addr: string, data: array of byte, retransmits: int)
 {
     buffer := array [len data + Udp4hdrlen] of byte;
@@ -1446,6 +1482,26 @@ Local.sendtmsg(l: self ref Local, n: ref Node, msg: ref Tmsg, retransmits: int):
     l.sendmsg(n.pubaddr, buf, retransmits);
     if (n.pubaddr != n.prvaddr)
         l.sendmsg(n.prvaddr, buf, retransmits);
+
+    color := Draw->Black;
+    pick m := msg {
+        Ping =>
+            color = Draw->Darkblue;
+        Store =>
+            color = Draw->Red;
+        FindNode =>
+            color = Draw->Green;
+        FindValue =>
+            color = Draw->Cyan;
+        Invitation =>
+            color = Draw->Magenta;
+        Observe =>
+            color = Draw->Blue;
+        User =>
+            color = Draw->White;
+    }
+    debugpacket(n.pubaddr, color);
+
     return ch;
 }
 Local.sendrmsg(l: self ref Local, prvaddr: string, pubaddr: string, msg: ref Rmsg)
@@ -1879,6 +1935,7 @@ start(localaddr: string, bootstrap: array of ref Node, id: Key, logfd: ref Sys->
     spawn server.timer();
 
     server.dhtfindnode(id, bootstrap);
+    debuglabel(node.id.text()[4:(BB*2+4)]);
 
     return server;
 }
