@@ -689,8 +689,10 @@ dhteventlistener()
             StoreItemReplicated or
             StoreItemRepublished =>
                 ; # maybe tell the program about it?
-            DhtStarted or DhtDestroyed =>
+            DhtStarted =>
                 ; # we are really happy but can do nothing
+            DhtDestroyed =>
+                return;
             QueryForRmsgTimeouted =>
                 ; # how can we fix that?
                 # test connection?
