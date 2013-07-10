@@ -46,6 +46,8 @@ NOFID: con ~0;
 
 HASHSIZE : con 10000;
 DIS_TEMP: con "/tmp/";
+# TODO: remove this after everything is safe
+DISABLE_PROGRAMS: con 1;
 
 # DhtValue adt and serialisation
 
@@ -721,6 +723,8 @@ dhteventlistener()
             StoreItemAdded or
             StoreItemExpired =>
                 {
+                    if (DISABLE_PROGRAMS)
+                        continue;
                     # try to unpack, handle if that's a program
                     (nil, value) := DhtValue.unpack(e.item.data);
                     pick v := value {
