@@ -51,7 +51,7 @@ timer(ch: chan of int, timeout: int)
 
 rudplog(msg: string)
 {
-    sys->fprint(sys->fildes(2), "%s\n", msg);
+    #sys->fprint(sys->fildes(2), "%s\n", msg);
 }
 
 init()
