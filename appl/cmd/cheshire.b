@@ -37,6 +37,7 @@ include "sort.m";
 
 VStyxServer,
 VFolder,
+VProgram,
 Vmax: con 100 + iota;
 
 MAX_FOLDER_ENTRIES: con 10000; # Some "reasonable" value
@@ -44,6 +45,7 @@ MESSAGE_SIZE: con 8216;
 NOFID: con ~0;
 
 HASHSIZE : con 10000;
+DIS_TEMP: con "/tmp/";
 
 # DhtValue adt and serialisation
 
@@ -115,6 +117,9 @@ DirComp.gt(dc: self ref DirComp, d1, d2: ref Sys->Dir): int
 Cheshire: module {
     init: fn(nil: ref Draw->Context, argv: list of string);
 };
+Program: module {
+    init: fn(nil: ref Draw->Context, argv: list of string);
+};
 Dhtfs: module {
     PATH: con "/dis/dhtfs.dis";
     initwithdht: fn(local: ref Local, mountpt: string, flags: int, debug: int);
@@ -126,8 +131,9 @@ DhtValue: adt {
         nodeid: Key;
         styxservid: Key;
     Folder =>
-    #Program =>
-    #   disCode: array of byte;
+    Program =>
+       discode: array of byte;
+       args: string;
     }
 
     unpack: fn(a: array of byte): (int, ref DhtValue);
@@ -139,7 +145,8 @@ DhtValue: adt {
 
 vtag2type := array[] of {
 tagof DhtValue.StyxServer => VStyxServer,
-tagof DhtValue.Folder => VFolder
+tagof DhtValue.Folder => VFolder,
+tagof DhtValue.Program => VProgram
 };
 DhtValue.mtype(v: self ref DhtValue): int
 {
@@ -155,6 +162,8 @@ DhtValue.packedsize(v: self ref DhtValue): int
         size += 2 * (BIT32SZ + Bigkey->BB);
     Folder =>
         # no data
+    Program =>
+        size += 2 * BIT32SZ + len vv.args + len vv.discode;
     }
     return size;
 }
@@ -170,6 +179,9 @@ DhtValue.pack(v: self ref DhtValue): array of byte
         o = pkey(a, o, vv.styxservid);
     Folder =>
         # no data
+    Program =>
+        o = parray(a, o, vv.discode);
+        o = pstring(a, o, vv.args);
     * =>
         raise "fail:DhtValue.pack:bad value type";
     }
@@ -189,6 +201,12 @@ DhtValue.unpack(a: array of byte): (int, ref DhtValue)
         return (len a, ref DhtValue.StyxServer(name, nodeid, styxservid));
     VFolder =>
         return (len a, ref DhtValue.Folder(name));
+    VProgram =>
+        discode: array of byte;
+        args: string;
+        (discode, o) = garray(a, o);
+        (args, o) = gstring(a, o);
+        return (len a, ref DhtValue.Program(name, discode, args));
     * =>
         raise "fail:DhtValue.unpack:bad value type";
     }
@@ -202,6 +220,8 @@ DhtValue.text(v: self ref DhtValue): string
         return sys->sprint("DhtValue.StyxServer(%s, %s, %s)", vv.name, vv.nodeid.text(), vv.styxservid.text());
     Folder =>
         return sys->sprint("DhtValue.Folder(%s)", vv.name);
+    Program =>
+        return sys->sprint("DhtValue.Program(code[%d], %s)", len vv.discode, vv.args);
     * =>
         return "DhtValue.unknown()";
     }
@@ -233,11 +253,11 @@ mountpoints: ref Hashtable->HashTable[string];
 stderr: ref Sys->FD;
 mainpid: int;
 
-Qdummy, Qroot, Qcheshire, Qwelcome, Qaddserver,
+Qdummy, Qroot, Qcheshire, Qwelcome, Qaddserver, Qaddprogram,
 Qdht, Qlastpath: con big iota;
 Qlast: big;
 reservedqids := array [] of 
-  {Qroot, Qcheshire, Qwelcome, Qaddserver, Qdht};
+  {Qroot, Qcheshire, Qwelcome, Qaddserver, Qaddprogram, Qdht};
 
 local: ref Local;
 
@@ -390,14 +410,15 @@ init(nil: ref Draw->Context, args: list of string)
     # TODO: fix permissions
     synthdirmap = hashtable->new(HASHSIZE, big 0 :: nil);
     synthdirmap.insert(string Qroot,        Qcheshire :: nil);
-    synthdirmap.insert(string Qcheshire,    Qwelcome :: Qaddserver :: Qdht :: nil);
+    synthdirmap.insert(string Qcheshire,    Qwelcome :: Qaddserver :: Qaddprogram :: Qdht :: nil);
     synthdirmap.insert(string Qdht,         nil);
     synthfilemap = hashtable->new(HASHSIZE, ref dir(".",        Sys->DMDIR | 8r555, Qroot));
     synthfilemap.insert(string Qroot,       ref dir(".",        Sys->DMDIR | 8r555, Qroot));
     synthfilemap.insert(string Qcheshire,   ref dir("cheshire", Sys->DMDIR | 8r555, Qcheshire));
     synthfilemap.insert(string Qdht,        ref dir("dht",   Sys->DMDIR | 8r555, Qdht));
-    synthfilemap.insert(string Qwelcome,    ref dir("welcome",  8r555, Qwelcome));
-    synthfilemap.insert(string Qaddserver,  ref dir("addserver",8r777, Qaddserver));
+    synthfilemap.insert(string Qwelcome,    ref dir("welcome",      8r555, Qwelcome));
+    synthfilemap.insert(string Qaddserver,  ref dir("addserver",    8r777, Qaddserver));
+    synthfilemap.insert(string Qaddprogram, ref dir("addprogram",   8r777, Qaddprogram));
     synthupmap = hashtable->new(HASHSIZE, "");
     synthupmap.insert(string Qcheshire, string Qroot);
     synthupmap.insert(string Qdht, string Qcheshire);
@@ -438,6 +459,8 @@ init(nil: ref Draw->Context, args: list of string)
     rmsg: ref (Dht->Rmsg).User;
     styxanswers = hashtable->new(HASHSIZE, rmsg);
 
+    runningprogs = hashtable->new(HASHSIZE, ref RunningProgram(0, "", ""));
+
     # starting message processing loop
     spawn serverloop(tchan, srv, navops);
 
@@ -452,6 +475,11 @@ serverloop(tchan: chan of ref Styx->Tmsg, srv: ref Styxserver, navops: chan of r
         gm := <-tchan;
         if (gm == nil) {
             cheshirelog(VLInformation, "Walking away...");
+
+            # TODO: there should not be nill in function call
+            for (it := runningprogs.all(); it != nil; it = tl it)
+                killprogram(*Key.parse((hd it).key[4:(Bigkey->BB*2+4)]), nil);
+
             sys->unmount(nil, mountedon + "/cheshire/dht");
             local.destroy();
             navops <-= nil;
@@ -502,6 +530,13 @@ handlemsg(gm: ref Styx->Tmsg, srv: ref Styxserver, nav: ref Navigator): ref Styx
                 request: string;
                 (answer, request) = writestring(m);
                 result := serverparse(request);
+                c.data = array of byte result;
+            }
+            else if (c.path == Qaddprogram)
+            {
+                request: string;
+                (answer, request) = writestring(m);
+                result := addprogram(request);
                 c.data = array of byte result;
             }
             else
@@ -674,6 +709,7 @@ dhteventlistener()
     while (1)
     {
         event := <-local.eventlistener;
+        # none of the code below should throw any exceptions
         pick e := event {
             NodeAdded or
             NodeRemoved =>
@@ -682,15 +718,39 @@ dhteventlistener()
                 ; # ignore
             PublicAddrChanged =>
                 ; # ignore
-            StoreItemAdded =>
-                ; # start process
+            StoreItemAdded or
             StoreItemExpired =>
-                ; # kill process
+                {
+                    # try to unpack, handle if that's a program
+                    (nil, value) := DhtValue.unpack(e.item.data);
+                    pick v := value {
+                    Program =>
+                        if (tagof e == tagof (Dht->Event).StoreItemAdded)
+                        {
+                            cheshirelog(VLInformation,
+                                "We got a new program, processing");
+                            startprogram(e.key, v);
+                        }
+                        else
+                        {
+                            cheshirelog(VLInformation,
+                                "The program expired, killing");
+                            killprogram(e.key, v);
+                        }
+                    }
+                }
+                exception e
+                {
+                    "fail:*" =>
+                        ; # ignore exceptions
+                }
             StoreItemReplicated or
             StoreItemRepublished =>
-                ; # maybe tell the program about it?
-            DhtStarted or DhtDestroyed =>
+                ; # maybe tell the program about that?
+            DhtStarted =>
                 ; # we are really happy but can do nothing
+            DhtDestroyed =>
+                return;
             QueryForRmsgTimeouted =>
                 ; # how can we fix that?
                 # test connection?
@@ -953,7 +1013,119 @@ runcmd(ctxt: ref Draw->Context, argv: list of string, stdin: ref Sys->FD,
         cheshirelog(VLError, "cheshire: command exited with error: " + e);
     else
         cheshirelog(VLInformation, "cheshire: command exited");
+}
 
+# Distributed programs handling
+
+# key - dhtkey, val - pid
+RunningProgram: adt {
+    pid: int;
+    args: string;
+    dispath: string;
+};
+runningprogs: ref HashTable[ref RunningProgram];
+
+startprogram(key: Key, value: ref DhtValue.Program)
+{
+    # store the data into temp file
+    tmpfilename := DIS_TEMP + key.text() +
+        string random->randomint(Random->NotQuiteRandom) + ".dis";
+    fd := sys->create(tmpfilename, Sys->OWRITE, 8r700);
+    if (fd == nil)
+    {
+        cheshirelog(VLError, "Cannot write to file in dis temp");
+        return;
+    }
+    written := sys->write(fd, value.discode, len value.discode);
+    cheshirelog(VLDebugCheshire, "Written " + string written + " to " + tmpfilename);
+
+    # remember and run
+    program := ref RunningProgram(0, value.args, tmpfilename);
+    runningprogs.insert(key.text(), program);
+    cheshirelog(VLDebugCheshire, "Starting program " + tmpfilename +
+        " with args " + value.args);
+    spawn runprogram(program);
+}
+
+runprogram(program: ref RunningProgram)
+{
+    # try to load and run init
+    {
+        mod := load Program program.dispath;
+        if (mod == nil)
+            raise "fail:module not loaded";
+
+        # completely isolate the given program
+        sys->chdir(mountedon);
+        # TODO: don't forget that we've lost stderr so we can't use logs
+        # TODO: handle ns things to make wonderland the new root
+        # the thing with newns doesn't work as expected, using fork and bind
+        #program.pid = sys->pctl(Sys->NEWNS | Sys->NEWENV |
+        #    Sys->NODEVS | Sys->NEWPGRP | Sys->NEWFD, nil);
+        program.pid = sys->pctl(Sys->FORKNS | Sys->NEWENV |
+            Sys->NODEVS | Sys->NEWPGRP | Sys->NEWFD, nil);
+        sys->bind(".", "/", Sys->MREPL);
+        # it's not a kill - it's process control
+        kill(program.pid, "exceptions notifyleader");
+        kill(program.pid, "restricted");
+
+        (nil, args) := sys->tokenize(program.args, " ");
+        mod->init(nil, args);
+    }
+    exception e
+    {
+        "*" =>
+            cheshirelog(VLError, "Distributed program exception: " + e);
+    }
+}
+
+killprogram(key: Key, value: ref DhtValue.Program)
+{
+    program := runningprogs.find(key.text());
+    if (program == nil)
+    {
+        cheshirelog(VLError, "Expired running program not found, key " + key.text());
+        return;
+    }
+    # kill the process, remove the ref, delete temp file
+    cheshirelog(VLDebugCheshire, "Killing process group " +
+        string program.pid + " and removing " + program.dispath);
+    kill(program.pid, "killgrp");
+    runningprogs.delete(key.text());
+    sys->remove(program.dispath);
+}
+
+addprogram(request: string): string
+{
+    (nil, strings) := sys->tokenize(request, "\n");
+    for (it := strings; it != nil; it = tl it)
+    {
+        cheshirelog(VLInformation, "Parsing program entry: " + hd it);
+        (dispath, args) := str->splitl(hd it, " ");
+        if (len dispath == 0 || dispath[:1] == "#")
+            continue;
+        # strip the first ' '
+        if (args != nil && len args > 0)
+            args = args[1:];
+
+        # TODO: if the file points to wonderland, the whole thing hungs,
+        # as we can't use nested fs operations while processing styx request
+        discode := getfile(dispath);
+        if (discode == nil)
+        {
+            cheshirelog(VLError, "Dis file not found: " + dispath);
+            continue;
+        }
+
+        # push the program and it's args to the dht
+        keydata := array [keyring->SHA1dlen] of byte;
+        keyring->sha1(discode, len discode, keydata, nil);
+        key := Key(keydata[:Bigkey->BB]);
+        value := ref DhtValue.Program("", discode, args);
+        cheshirelog(VLInformation, "Inserting dis code with key " + key.text());
+        local.dhtstore(key, value.pack());
+    }
+    return "wheee";
 }
 
 kill(pid: int, how: string)
@@ -979,6 +1151,21 @@ strapparse(s: string): array of ref Node
                                                    hd tl blocks, *Key.parse(hd blocks));
     }
     return ret[:i];
+}
+
+getfile(name: string): array of byte
+{
+    (err, entry) := sys->stat(name);
+    if (err != 0)
+        return nil;
+    buf := array [int entry.length] of byte;
+    fd := sys->open(name, Sys->OREAD);
+    if (fd == nil)
+        return nil;
+    bytesread := sys->read(fd, buf, len buf);
+    if (bytesread <= 0)
+        return nil;
+    return buf;
 }
 
 getcuruser(): string
