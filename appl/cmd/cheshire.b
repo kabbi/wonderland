@@ -405,8 +405,11 @@ init(nil: ref Draw->Context, args: list of string)
     # creating navigators and servers
     cheshirelog(VLInformation, "Creating styxservers");
     navops := chan of ref Styxservers->Navop;
+    parallelnavops := chan of ref Styxservers->Navop;
     (tchan, srv) := Styxserver.new(sys->fildes(0), Navigator.new(navops), Qroot);
-    spawn navigator(navops);
+    # we will have another, parallel navop here to handle parallel requests (like mounts)
+    spawn navigator(srv, navops, Navigator.new(parallelnavops));
+    spawn navigator(srv, parallelnavops, nil);
 
     # creating file tree
     # TODO: fix permissions
@@ -548,6 +551,11 @@ handlemsg(gm: ref Styx->Tmsg, srv: ref Styxserver, nav: ref Navigator): ref Styx
     Remove =>
         # TODO: Unmap from fidmap and mounpoints, close connection
         srv.default(gm);
+    Walk =>
+        # to allow parallel requests
+        # WARNING: it's quite dangerous, do NOT make any requests
+        # inside navigator handlers without changing the server navigator 
+        spawn srv.default(gm);
     * =>
         srv.default(gm);
     }
@@ -556,7 +564,7 @@ handlemsg(gm: ref Styx->Tmsg, srv: ref Styxserver, nav: ref Navigator): ref Styx
 
 # Navigator implementation, for cheshire to know the content of the folders
 
-navigator(navops: chan of ref styxservers->Navop)
+navigator(srv: ref Styxserver, navops: chan of ref styxservers->Navop, parallelnav: ref Navigator)
 {
     while((m := <-navops) != nil){
 
@@ -609,8 +617,15 @@ navigator(navops: chan of ref styxservers->Navop)
                         StyxServer =>
                             if (mountpoints.find(destpath) == nil)
                             {
+                                # some misterious way to handle mount deadlock
+                                # we temporary change the navigator to reap the walk msg
+                                realnav := srv.t;
+                                srv.t = parallelnav;
+
                                 mountpoints.insert(destpath, "started");
-                                spawn mountserver(entry, mountedon + destpath);
+                                mountserver(entry, mountedon + destpath);
+
+                                srv.t = realnav;
                             }
                             n.reply <-= (ref dir(n.name, Sys->DMDIR | 8r555, big destqid), nil);
                         Folder =>
