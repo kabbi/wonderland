@@ -1138,6 +1138,8 @@ Local.processtmsg(l: self ref Local, buf: array of byte, raddr: string)
         sender := ref msg.sender;
         shouldadd := 1;
 
+        debugpacket(sender.id, l.node.id, msg.mtype());
+
         answer: ref Rmsg;
         pick m := msg {
             Ping =>
@@ -1420,21 +1422,34 @@ Local.storeproc(l: self ref Local)
 }
 
 # NetEmu debug code
-debugpacket(target: string, color: int)
+debugpacket(source: Key, target: Key, mtype: int)
 {
-    (nil, targetport) := dialparse(target);
-    if (targetport < 12500)
-        return;
-    sourceid := env->getenv("machid");
-    if (sourceid == nil)
-        return;
-    targetid := string (targetport - 12500);
     fd := sys->open("/chan/emuctl", Sys->OWRITE);
     if (fd == nil)
         return;
-    sys->fprint(fd, "packet %s %s %d", sourceid, targetid, color);
+
+    color := Draw->Black;
+    case mtype {
+        TPing =>
+            color = Draw->Darkblue;
+        TStore =>
+            color = Draw->Red;
+        TFindNode =>
+            color = Draw->Green;
+        TFindValue =>
+            color = Draw->Cyan;
+        TInvitation =>
+            color = Draw->Magenta;
+        TObserve =>
+            color = Draw->Blue;
+        TUser =>
+            color = Draw->White;
+    }
+
+    sys->fprint(fd, "packet %s %s %d", source.text()[4:Bigkey->BB*2 + 4],
+        target.text()[4:Bigkey->BB*2 + 4], color);
 }
-debuglabel(label: string)
+debugname(name: string)
 {
     sourceid := env->getenv("machid");
     if (sourceid == nil)
@@ -1442,7 +1457,7 @@ debuglabel(label: string)
     fd := sys->open("/chan/emuctl", Sys->OWRITE);
     if (fd == nil)
         return;
-    sys->fprint(fd, "label %s %s", sourceid, label);
+    sys->fprint(fd, "name %s %s", sourceid, name);
 }
 
 Local.sendmsg(l: self ref Local, addr: string, data: array of byte, retransmits: int)
@@ -1483,24 +1498,7 @@ Local.sendtmsg(l: self ref Local, n: ref Node, msg: ref Tmsg, retransmits: int):
     if (n.pubaddr != n.prvaddr)
         l.sendmsg(n.prvaddr, buf, retransmits);
 
-    color := Draw->Black;
-    pick m := msg {
-        Ping =>
-            color = Draw->Darkblue;
-        Store =>
-            color = Draw->Red;
-        FindNode =>
-            color = Draw->Green;
-        FindValue =>
-            color = Draw->Cyan;
-        Invitation =>
-            color = Draw->Magenta;
-        Observe =>
-            color = Draw->Blue;
-        User =>
-            color = Draw->White;
-    }
-    debugpacket(n.pubaddr, color);
+    debugpacket(l.node.id, n.id, msg.mtype());
 
     return ch;
 }
@@ -1894,6 +1892,8 @@ start(localaddr: string, bootstrap: array of ref Node, id: Key, logfd: ref Sys->
         callbacksch, hashtable->new(CALLBACKSIZE, ch), storech, contactsch, 0, 0, 0, 0, 0, logfd, c, tchan, rchan, 0);
     server.contacts.local = server;
 
+    debugname(node.id.text()[4:Bigkey->BB*2 + 4]);
+
     spawn server.process();
     spawn server.callbacksproc();
     spawn server.contactsproc();
@@ -1935,7 +1935,6 @@ start(localaddr: string, bootstrap: array of ref Node, id: Key, logfd: ref Sys->
     spawn server.timer();
 
     server.dhtfindnode(id, bootstrap);
-    debuglabel(node.id.text()[4:(BB*2+4)]);
 
     return server;
 }

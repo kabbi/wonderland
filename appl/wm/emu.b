@@ -19,6 +19,8 @@ include "daytime.m";
 	daytime: Daytime;
 include "lists.m";
 	lists: Lists;
+include "rand.m";
+	rand: Rand;
 include "env.m";
 	env: Env;
 include "sh.m";
@@ -49,7 +51,9 @@ Instance: adt {
 	id: int;
 	color: int;
 	point: Point;
+	name: string;
 	label: string;
+	virtual: int;
 
 	cmd: string;
 	boottime: int;
@@ -73,6 +77,8 @@ Instance.eq(a: ref Instance, b: ref Instance): int
 }
 Instance.boot(i: self ref Instance)
 {
+	if (i.virtual)
+		return;
 	spawn i.proc();
 }
 Instance.proc(i: self ref Instance)
@@ -87,6 +93,8 @@ Instance.proc(i: self ref Instance)
 }
 Instance.kill(i: self ref Instance)
 {
+	if (i.virtual)
+		return;
 	i.killch <-= 1;
 }
 Instance.blink(i: self ref Instance, target: ref Instance, color: int)
@@ -99,9 +107,9 @@ Instance.draw(i: self ref Instance, screen: ref Image)
 	# Draw self
 	screen.ellipse(translate(i.point), INSTANCE_DRAW_RADIUS, INSTANCE_DRAW_RADIUS,
 		1, display.color(Draw->Magenta), ZP);
-	labelpos := translate(centeralign(i.label, labelfont,
+	labelpos := translate(centeralign(i.name, labelfont,
 		i.point.add((0, INSTANCE_DRAW_RADIUS))));
-	screen.text(labelpos, fontbg, ZP, labelfont, i.label);
+	screen.text(labelpos, fontbg, ZP, labelfont, i.name);
 	# Draw connections
 	for (it := i.connections; it != nil; it = tl it)
 		screen.line(translate(i.point), translate((hd it).point),
@@ -177,6 +185,10 @@ init(ctxt: ref Draw->Context, nil: list of string)
 	wmclient = load Wmclient Wmclient->PATH;
 	if (wmclient == nil)
 		badmodule(Wmclient->PATH);
+	rand = load Rand Rand->PATH;
+	if (rand == nil)
+		badmodule(Rand->PATH);
+	rand->init(sys->millisec());
 	env = load Env Env->PATH;
 	if (env == nil)
 		badmodule(Env->PATH);
@@ -246,10 +258,10 @@ init(ctxt: ref Draw->Context, nil: list of string)
 			}
 		char := <-w.ctxt.kbd =>
 			# Keyboard event processing
-			#case char of {
-			#	'+' =>
-
-			#}
+			case char {
+				'q' =>
+					addinstance(randpoint(), 1);
+			}
 		p := <-w.ctxt.ptr =>
 			# Check if it's cosumed by the title bar
 			if (w.pointer(*p))
@@ -269,7 +281,7 @@ init(ctxt: ref Draw->Context, nil: list of string)
 				if (connectFrom == nil) {
 					connectFrom = instancebypoint(point);
 					if (connectFrom == nil)
-						addinstance(point, "test");
+						addinstance(point, 0);
 				}
 				else {
 					targetPoint := point;
@@ -341,22 +353,24 @@ drawconnection(screen: ref Image, source, target: Point)
 
 # Instance management
 
-addinstance(point: Point, cmd: string)
+addinstance(point: Point, virtual: int): ref Instance
 {
 	instance := ref Instance;
 	instance.id = instanceid++;
 	instance.color = Draw->Black;
 	instance.killch = chan of int;
 	instance.point = point;
-	instance.cmd = cmd;
+	instance.virtual = virtual;
 	instance.boot();
 
-	for (it := instances; it != nil; it = tl it)
-		instance.connectTo(hd it);
+	#for (it := instances; it != nil; it = tl it)
+	#	instance.connectTo(hd it);
 
 	instances = instance :: instances;
 	trace(EDEBUG, sys->sprint("Added new instance at %s with id %d",
 		point2str(point), instance.id));
+
+	return instance;
 }
 
 killinstance(instance: ref Instance)
@@ -415,20 +429,34 @@ processctlcommand(data: string)
 		"packet" =>
 			if (len cmdlist < 2)
 				raise "fail:bad args";
-			sourceid := int hd cmdlist;
-			targetid := int hd tl cmdlist;
+			sourceid := hd cmdlist;
+			targetid := hd tl cmdlist;
 			color := Draw->Black;
 			if (tl tl cmdlist != nil)
 				color = int hd tl tl cmdlist;
-			source := instancebyid(sourceid);
-			target := instancebyid(targetid);
-			if (source != nil && target != nil)
-				source.blink(target, color);
-		"label" =>
+			source := instancebyname(sourceid);
+			if (source == nil) {
+				source = addinstance(randpoint(), 1);
+				source.name = sourceid;
+			}
+			target := instancebyname(targetid);
+			if (target == nil) {
+				target = addinstance(randpoint(), 1);
+				target.name = targetid;
+			}
+			source.blink(target, color);
+		"name" =>
 			if (len cmdlist < 2)
 				raise "fail:bad args";
 			sourceid := int hd cmdlist;
 			source := instancebyid(sourceid);
+			if (source != nil)
+				source.name = hd tl cmdlist;
+		"label" =>
+			if (len cmdlist < 2)
+				raise "fail:bad args";
+			sourcename := hd cmdlist;
+			source := instancebyname(sourcename);
 			if (source != nil)
 				source.label = hd tl cmdlist;
 		* =>
@@ -479,6 +507,14 @@ instancebyid(id: int): ref Instance
 	return nil;
 }
 
+instancebyname(name: string): ref Instance
+{
+	for (it := instances; it != nil; it = tl it)
+		if ((hd it).name == name)
+			return hd it;
+	return instancebyid(int name);
+}
+
 dist(p1: Point, p2: Point): int
 {
 	p := p1.sub(p2);
@@ -493,6 +529,12 @@ point2str(p: Point): string
 rect2str(r: Rect): string
 {
 	return sys->sprint("(%d, %d - %d, %d)", r.min.x, r.min.y, r.max.x, r.max.y);
+}
+
+randpoint(): Point
+{
+	return Point(rand->rand(display.image.r.dx() - 2 * INSTANCE_DRAW_RADIUS) + INSTANCE_DRAW_RADIUS,
+		rand->rand(display.image.r.dy() - 2 * INSTANCE_DRAW_RADIUS) + INSTANCE_DRAW_RADIUS);
 }
 
 irefeq(a: ref Instance, b: ref Instance): int
