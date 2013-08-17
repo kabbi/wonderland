@@ -110,6 +110,9 @@ Instance.draw(i: self ref Instance, screen: ref Image)
 	labelpos := translate(centeralign(i.name, labelfont,
 		i.point.add((0, INSTANCE_DRAW_RADIUS))));
 	screen.text(labelpos, fontbg, ZP, labelfont, i.name);
+	labelpos = translate(centeralign(i.label, labelfont,
+		i.point.add((0, -2*INSTANCE_DRAW_RADIUS))));
+	screen.text(labelpos, fontbg, ZP, labelfont, i.label);
 	# Draw connections
 	for (it := i.connections; it != nil; it = tl it)
 		screen.line(translate(i.point), translate((hd it).point),
@@ -238,8 +241,9 @@ init(ctxt: ref Draw->Context, nil: list of string)
 	ticks := chan of int;
 	spawn timer(ticks, 50);
 
-	connectFrom, connectTo: ref Instance;
 	startDrag: ref Point;
+	startInstanceDrag: ref Point;
+	draggedInstance: ref Instance;
 	for(;;) alt{
 		ctl := <-w.ctl or ctl = <-w.ctxt.ctl =>
 			if (ctl == "exit") {
@@ -273,29 +277,25 @@ init(ctxt: ref Draw->Context, nil: list of string)
 
 			point := p.xy.sub(w.image.r.min);
 
-			# Adding and connection events
+			# Dragging events
 			if (p.buttons & 1) {
 				# In this section we are working with virtual coords
-				point = point.sub(disp);
+				#point = point.sub(disp);
 
-				if (connectFrom == nil) {
-					connectFrom = instancebypoint(point);
-					if (connectFrom == nil)
-						addinstance(point, 0);
+				selectedInstance := instancebypoint(point.sub(disp));
+				if (draggedInstance == nil) {
+					if (selectedInstance != nil) {
+						draggedInstance = selectedInstance;
+						startInstanceDrag = ref point.sub(draggedInstance.point);
+					}
 				}
 				else {
-					targetPoint := point;
-					connectTo = instancebypoint(point);
-					if (connectTo != nil)
-						targetPoint = connectTo.point;
-					drawconnection(w.image, connectFrom.point, targetPoint);
+					draggedInstance.point = point.sub(*startInstanceDrag);
+					drawscreen(w.image);
 				}
 			}
 			else {
-				if (connectFrom != nil && connectTo != nil) {
-					connectFrom.connectTo(connectTo);
-				}
-				connectFrom = connectTo = nil;
+				draggedInstance = nil;
 			}
 
 			# Dragging the whole area
@@ -533,8 +533,8 @@ rect2str(r: Rect): string
 
 randpoint(): Point
 {
-	return Point(rand->rand(display.image.r.dx() - 2 * INSTANCE_DRAW_RADIUS) + INSTANCE_DRAW_RADIUS,
-		rand->rand(display.image.r.dy() - 2 * INSTANCE_DRAW_RADIUS) + INSTANCE_DRAW_RADIUS);
+	return Point(rand->rand(display.image.r.dx() / 2),
+		rand->rand(display.image.r.dy() / 2));
 }
 
 irefeq(a: ref Instance, b: ref Instance): int

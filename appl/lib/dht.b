@@ -1139,6 +1139,7 @@ Local.processtmsg(l: self ref Local, buf: array of byte, raddr: string)
         shouldadd := 1;
 
         debugpacket(sender.id, l.node.id, msg.mtype());
+        debuglabel(sender.id, sender.pubaddr);
 
         answer: ref Rmsg;
         pick m := msg {
@@ -1458,6 +1459,14 @@ debugname(name: string)
     if (fd == nil)
         return;
     sys->fprint(fd, "name %s %s", sourceid, name);
+}
+debuglabel(node: Key, label: string)
+{
+    fd := sys->open("/chan/emuctl", Sys->OWRITE);
+    if (fd == nil)
+        return;
+    sys->fprint(fd, "label %s %s", node.text()[4:Bigkey->BB*2 + 4],
+        label);
 }
 
 Local.sendmsg(l: self ref Local, addr: string, data: array of byte, retransmits: int)
