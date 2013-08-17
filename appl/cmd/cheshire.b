@@ -1077,12 +1077,14 @@ runprogram(program: ref RunningProgram)
         # completely isolate the given program
         sys->chdir(mountedon);
         # TODO: don't forget that we've lost stderr so we can't use logs
+        # TODO: we can't use FORKNS as then we won't receive any subsequent
+        # mounts and will not be able to use them
         # TODO: handle ns things to make wonderland the new root
         # the thing with newns doesn't work as expected, using fork and bind
         #program.pid = sys->pctl(Sys->NEWNS | Sys->NEWENV |
         #    Sys->NODEVS | Sys->NEWPGRP | Sys->NEWFD, nil);
-        program.pid = sys->pctl(Sys->FORKNS | Sys->NEWENV |
-            Sys->NODEVS | Sys->NEWPGRP | Sys->NEWFD, nil);
+        program.pid = sys->pctl(Sys->NEWENV | Sys->NODEVS |
+            Sys->NEWPGRP | Sys->NEWFD, nil);
         sys->bind(".", "/", Sys->MREPL);
         # it's not a kill - it's process control
         kill(program.pid, "exceptions notifyleader");
