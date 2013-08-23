@@ -48,6 +48,7 @@ HASHSIZE : con 10000;
 DIS_TEMP: con "/tmp/";
 # TODO: remove this after everything is safe
 DISABLE_PROGRAMS: con 1;
+CHESHIRE_KEY_FILE: con "/lib/dht/cheshirekey";
 
 # DhtValue adt and serialisation
 
@@ -315,8 +316,40 @@ writestring(m: ref Tmsg.Write): (ref Rmsg.Write, string)
 
 # main cheshire implementation
 
+newlocalkey()
+{
+    localkey = Key.generate();
+    keyfile := sys->create(CHESHIRE_KEY_FILE, Sys->OWRITE, 8r777);
+    if (keyfile == nil)
+        return;
+    cheshirelog(VLInformation, sys->sprint("Generated new localkey file %s with key %s",
+        CHESHIRE_KEY_FILE, localkey.text()));
+    sys->fprint(keyfile, "%s\n", localkey.text()[4:Bigkey->BB*2+4]);
+}
+
+loadlocalkey()
+{
+    keyfile := sys->open(CHESHIRE_KEY_FILE, Sys->OREAD);
+    if (keyfile == nil)
+        return newlocalkey();
+
+    buf := array [Bigkey->BB*2] of byte;
+    result := sys->read(keyfile, buf, len buf);
+    if (result != len buf)
+        return newlocalkey();
+
+    localkeyref := Key.parse(string buf);
+    if (localkeyref == nil)
+        return newlocalkey();
+
+    localkey = *localkeyref;
+    cheshirelog(VLInformation, sys->sprint("Loaded local key %s from %s",
+        localkey.text(), CHESHIRE_KEY_FILE));
+}
+
 startdht()
 {
+    loadlocalkey();
     local = dht->start(localaddr, straplist, localkey, nil);
     if (local == nil)
     {
@@ -390,7 +423,6 @@ init(nil: ref Draw->Context, args: list of string)
     if (hashtable == nil)
         badmodule(Hashtable->PATH);
 
-    localkey = Key.generate();
     localaddr = hd args;
     # find out the current user to make it the owner of all folders
     user = getcuruser();
