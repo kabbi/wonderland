@@ -1085,7 +1085,7 @@ runprogram(program: ref RunningProgram)
         #    Sys->NODEVS | Sys->NEWPGRP | Sys->NEWFD, nil);
         program.pid = sys->pctl(Sys->NEWENV | Sys->NODEVS |
             Sys->NEWPGRP | Sys->NEWFD, nil);
-        sys->bind(".", "/", Sys->MREPL);
+        #sys->bind(".", "/", Sys->MREPL);
         # it's not a kill - it's process control
         kill(program.pid, "exceptions notifyleader");
         kill(program.pid, "restricted");
