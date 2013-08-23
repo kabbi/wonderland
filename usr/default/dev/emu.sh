@@ -1,3 +1,4 @@
+wintitle=Emu
 # Compile, kill and run NetEmu
 fn c {limbo -g -o /dis/wm/emu.dis /appl/wm/emu.b}
 fn k {kill Emu}

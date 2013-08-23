@@ -1,3 +1,4 @@
+wintitle=Dht
 fn c {
 	limbo -g -o /dis/lib/dht.dis /appl/lib/dht.b
 	cp /dis/lib/dht.sbl /appl/lib/

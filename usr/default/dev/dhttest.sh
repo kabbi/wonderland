@@ -1,3 +1,4 @@
+wintitle=DhtTest
 # some useful functions
 fn c {
 	limbo -g -o /dis/dhttest.dis /appl/cmd/dhttest.b

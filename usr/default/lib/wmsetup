@@ -1,5 +1,11 @@
 fn create-dev-shell {
-	wm/sh -c 'run dev/'$1 -i&
+	wm/sh -c 'run dev/'$1'; cd' -i&
+}
+fn cd {
+	builtin cd $*;
+	rescue 'bad redir' {} {
+		echo cwd ''''$wintitle `{pwd}'''' > /chan/shctl
+	} >[2] /dev/null
 }
 menu Wonderland Cheshire {create-dev-shell cheshire.sh}
 menu Wonderland Dht {create-dev-shell dht.sh}

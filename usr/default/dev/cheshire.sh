@@ -1,3 +1,4 @@
+wintitle=Cheshire
 # clear the 'dht neighbours' file
 fn n {echo > /lib/dht/neis}
 # compile cheshire

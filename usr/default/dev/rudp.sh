@@ -1,3 +1,4 @@
+wintitle=Rudp
 fn cr {limbo -g -o /dis/lib/rudp.dis /appl/lib/rudp.b}
 fn ct {limbo -g -o /dis/rudpping.dis /appl/cmd/rudpping.b}
 fn c {cr;ct}
