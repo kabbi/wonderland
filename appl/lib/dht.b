@@ -1681,7 +1681,10 @@ dhtfindnode(l: ref Local, id: Key, nodes: array of ref Node, asked: ref HashTabl
                     ret = dhtfindnode(l, id, newnodes, asked, search, retrievevalue);
                 FindValue =>
                     if (len m.value != 0)
+                    {
+                        spawn reaper(listench, pending - 1);
                         return (nil, m.value);
+                    }
                     newnodes = toref(m.nodes);
                     ret = dhtfindnode(l, id, newnodes, asked, search, retrievevalue);
             }
