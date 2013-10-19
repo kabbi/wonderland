@@ -512,7 +512,7 @@ instancebyname(name: string): ref Instance
 	for (it := instances; it != nil; it = tl it)
 		if ((hd it).name == name)
 			return hd it;
-	return instancebyid(int name);
+	return nil;
 }
 
 dist(p1: Point, p2: Point): int
