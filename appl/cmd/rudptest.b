@@ -46,6 +46,7 @@ init(ctxt: ref Draw->Context, argv: list of string)
     rudp->init();
     #rudp->setlogfd(sys->fildes(1));
     hashtable = load Hashtable Hashtable->PATH;
+    hashtable->init();
 
     if (len argv < 2 || len argv > 3)
         usage(hd argv);

@@ -25,6 +25,7 @@ include "rand.m";
     rand: Rand;
 include "hashtable.m";
     hashtable: Hashtable;
+    HashTable: import hashtable;
 include "bigkey.m";
     bigkey: Bigkey;
     Key: import bigkey;
@@ -95,6 +96,7 @@ init()
     hashtable = load Hashtable Hashtable->PATH;
     if (hashtable == nil)
         badmodule(Hashtable->PATH);
+    hashtable->init();
     sort = load Sort Sort->PATH;
     if (sort == nil)
         badmodule(Sort->PATH);
@@ -113,8 +115,6 @@ MAXSENTPACKETS: con 20;
 BIT32SZ:        con 4;
 BIT64SZ:        con 8;
 KEY:            con Bigkey->BB+BIT32SZ;
-
-CallbacksTable: type chan of (int, string, chan of ref Chunk);
 
 # TODO: throw this out
 # Stats
@@ -253,7 +253,7 @@ Chunk.send(c: self ref Chunk, connfd: ref Sys->FD, hdr: ref Udphdr)
 
 # GLOBAL TODO: Dht needs to know udp-metadata 
 
-accepter(packetid: Key, callbacks: CallbacksTable,
+accepter(packetid: Key, callback: chan of ref Chunk, callbacks: ref HashTable[chan of ref Chunk],
         hdr: ref Udphdr, rchan: chan of array of byte, connfd: ref Sys->FD,
         chunkstotal: int)
 {
@@ -264,8 +264,6 @@ accepter(packetid: Key, callbacks: CallbacksTable,
     # TODO: Tip - do not forget to check whether we already had such part
 
     rudplog("Starting accepter for: " + packetid.text());
-    callbacks <-= (Hashtable->HFind, packetid.text(), nil);
-    (nil, nil, callback) := <-callbacks;
 
     chunks := array [chunkstotal] of ref Chunk;
     # get all the chunks, if we had timeout - just stop
@@ -323,11 +321,11 @@ accepter(packetid: Key, callbacks: CallbacksTable,
         rchan <-= packet;
     }
     rudplog("Deleting callback: " + packetid.text());
-    callbacks <-= (Hashtable->HDelete, packetid.text(), nil);
+    callbacks.delete(packetid.text());
 }
 
 sender(connfd: ref Sys->FD, data: array of byte, timeout, retry: int, 
-       callbacks: CallbacksTable, waitchan: chan of int)
+       callbacks: ref HashTable[chan of ref Chunk], waitchan: chan of int)
 {
     #sys->sleep(rand->rand(50));
     # Splice into pieces
@@ -350,7 +348,7 @@ sender(connfd: ref Sys->FD, data: array of byte, timeout, retry: int,
     # setup callbacks
     packetuid := Key.generate();
     callbackch := chan of ref Chunk;
-    callbacks <-= (Hashtable->HInsert, packetuid.text(), callbackch);
+    callbacks.insert(packetuid.text(), callbackch);
     # split the data into chunks
     chunkstotal := len data / MAXCHUNKSIZE;
     if (chunkstotal * MAXCHUNKSIZE < len data)
@@ -416,17 +414,17 @@ sender(connfd: ref Sys->FD, data: array of byte, timeout, retry: int,
         totalgotanswers += gotanswers;
         if (gottimeout == 0 && totalgotanswers == chunkstotal) {
             rudplog("Send finished, all acks received");
-            callbacks <-= (Hashtable->HDelete, packetuid.text(), nil);
+            callbacks.delete(packetuid.text());
             return; # we did it!
         }
     }
     # do some work of telling the issuer about timeout
     # if it's actually needed
     rudplog("Timeout waiting acks after " + string retry + " attempts");
-    callbacks <-= (Hashtable->HDelete, packetuid.text(), nil);
+    callbacks.delete(packetuid.text());
 }
 
-listener(connfd: ref Sys->FD, callbacks: CallbacksTable, 
+listener(connfd: ref Sys->FD, callbacks: ref HashTable[chan of ref Chunk], 
          pidch: chan of int, rchan: chan of array of byte)
 {
     rudplog("Starting listener");
@@ -460,15 +458,14 @@ listener(connfd: ref Sys->FD, callbacks: CallbacksTable,
         {
             chunk := Chunk.unpack(buffer);
             belongsto := chunk.belongsto.text();
-            callbacks <-= (Hashtable->HFind, belongsto, nil);
-            (nil, nil, callback) := <-callbacks;
+            callback := callbacks.find(belongsto);
             rudplog("Searching for callback for " + belongsto);
             if (callback == nil)
             {
                 callback = chan of ref Chunk;
-                callbacks <-= (Hashtable->HInsert, belongsto, callback);
+                callbacks.insert(belongsto, callback);
                 rudplog("No callback exists, starting new accepter");
-                spawn accepter(chunk.belongsto, callbacks,
+                spawn accepter(chunk.belongsto, callback, callbacks,
                     hdr, rchan, connfd, chunk.chunkstotal);
             }
             callback <-= chunk;
