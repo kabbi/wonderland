@@ -21,9 +21,10 @@ include "sort.m";
     sort: Sort;
 include "lists.m";
     lists: Lists;
+include "rand.m";
+    rand: Rand;
 include "hashtable.m";
     hashtable: Hashtable;
-    HashTable: import hashtable;
 include "bigkey.m";
     bigkey: Bigkey;
     Key: import bigkey;
@@ -49,9 +50,15 @@ timer(ch: chan of int, timeout: int)
     ch <-= 1;
 }
 
+logfd: ref Sys->FD;
 rudplog(msg: string)
 {
-    #sys->fprint(sys->fildes(2), "%s\n", msg);
+    if (logfd != nil)
+        sys->fprint(logfd, "[time here] [rudp] %s\n", msg);
+}
+setlogfd(fd: ref Sys->FD)
+{
+    logfd = fd;
 }
 
 init()
@@ -72,6 +79,10 @@ init()
     daytime = load Daytime Daytime->PATH;
     if (daytime == nil)
         badmodule(Daytime->PATH);
+    rand = load Rand Rand->PATH;
+    if (rand == nil)
+        badmodule(Rand->PATH);
+    rand->init(sys->millisec());
     math = load Math Math->PATH;
     if (math == nil)
         badmodule(Math->PATH);
@@ -97,11 +108,18 @@ init()
 RECEIVETIMEOUT: con 10000;
 HASHSIZE:       con 31;
 RECVBUFFERSIZE: con 8192;
-MAXCHUNKSIZE:   con 5000;
-MAXSENTPACKETS: con 2;
+MAXCHUNKSIZE:   con 1400;
+MAXSENTPACKETS: con 20;
 BIT32SZ:        con 4;
 BIT64SZ:        con 8;
 KEY:            con Bigkey->BB+BIT32SZ;
+
+CallbacksTable: type chan of (int, string, chan of ref Chunk);
+
+# TODO: throw this out
+# Stats
+sentchunks := 0;
+failedchunks := 0;
 
 pkey(a: array of byte, o: int, k: Key): int
 {
@@ -235,7 +253,7 @@ Chunk.send(c: self ref Chunk, connfd: ref Sys->FD, hdr: ref Udphdr)
 
 # GLOBAL TODO: Dht needs to know udp-metadata 
 
-accepter(packetid: Key, callbacks: ref HashTable[chan of ref Chunk],
+accepter(packetid: Key, callbacks: CallbacksTable,
         hdr: ref Udphdr, rchan: chan of array of byte, connfd: ref Sys->FD,
         chunkstotal: int)
 {
@@ -246,7 +264,8 @@ accepter(packetid: Key, callbacks: ref HashTable[chan of ref Chunk],
     # TODO: Tip - do not forget to check whether we already had such part
 
     rudplog("Starting accepter for: " + packetid.text());
-    callback := callbacks.find(packetid.text());
+    callbacks <-= (Hashtable->HFind, packetid.text(), nil);
+    (nil, nil, callback) := <-callbacks;
 
     chunks := array [chunkstotal] of ref Chunk;
     # get all the chunks, if we had timeout - just stop
@@ -304,12 +323,13 @@ accepter(packetid: Key, callbacks: ref HashTable[chan of ref Chunk],
         rchan <-= packet;
     }
     rudplog("Deleting callback: " + packetid.text());
-    callbacks.delete(packetid.text());
+    callbacks <-= (Hashtable->HDelete, packetid.text(), nil);
 }
 
 sender(connfd: ref Sys->FD, data: array of byte, timeout, retry: int, 
-       callbacks: ref HashTable[chan of ref Chunk], waitchan: chan of int)
+       callbacks: CallbacksTable, waitchan: chan of int)
 {
+    #sys->sleep(rand->rand(50));
     # Splice into pieces
     # Create hashtable of acknowledged datagrams
     # Send all of them and create a kill-timer
@@ -330,7 +350,7 @@ sender(connfd: ref Sys->FD, data: array of byte, timeout, retry: int,
     # setup callbacks
     packetuid := Key.generate();
     callbackch := chan of ref Chunk;
-    callbacks.insert(packetuid.text(), callbackch);
+    callbacks <-= (Hashtable->HInsert, packetuid.text(), callbackch);
     # split the data into chunks
     chunkstotal := len data / MAXCHUNKSIZE;
     if (chunkstotal * MAXCHUNKSIZE < len data)
@@ -362,6 +382,7 @@ sender(connfd: ref Sys->FD, data: array of byte, timeout, retry: int,
         for (j := 0; j < chunkstotal; j++)
             if (chunkacks[j] == 0 && sentpackets < MAXSENTPACKETS)
             {
+                sentchunks++;
                 chunks[j].send(connfd, hdr);
                 sentpackets++;
             }
@@ -385,6 +406,7 @@ sender(connfd: ref Sys->FD, data: array of byte, timeout, retry: int,
                     trymore = 1;
                 <-killerch =>
                     rudplog("Got timeout");
+                    failedchunks++;
                     # so sad, break
                     gottimeout = 1;
             }
@@ -394,16 +416,17 @@ sender(connfd: ref Sys->FD, data: array of byte, timeout, retry: int,
         totalgotanswers += gotanswers;
         if (gottimeout == 0 && totalgotanswers == chunkstotal) {
             rudplog("Send finished, all acks received");
+            callbacks <-= (Hashtable->HDelete, packetuid.text(), nil);
             return; # we did it!
         }
     }
     # do some work of telling the issuer about timeout
     # if it's actually needed
     rudplog("Timeout waiting acks after " + string retry + " attempts");
+    callbacks <-= (Hashtable->HDelete, packetuid.text(), nil);
 }
 
-listener(connfd: ref Sys->FD, 
-         callbacks: ref HashTable[chan of ref Chunk], 
+listener(connfd: ref Sys->FD, callbacks: CallbacksTable, 
          pidch: chan of int, rchan: chan of array of byte)
 {
     rudplog("Starting listener");
@@ -437,12 +460,13 @@ listener(connfd: ref Sys->FD,
         {
             chunk := Chunk.unpack(buffer);
             belongsto := chunk.belongsto.text();
-            callback := callbacks.find(belongsto);
+            callbacks <-= (Hashtable->HFind, belongsto, nil);
+            (nil, nil, callback) := <-callbacks;
             rudplog("Searching for callback for " + belongsto);
             if (callback == nil)
             {
                 callback = chan of ref Chunk;
-                callbacks.insert(belongsto, callback);
+                callbacks <-= (Hashtable->HInsert, belongsto, callback);
                 rudplog("No callback exists, starting new accepter");
                 spawn accepter(chunk.belongsto, callbacks,
                     hdr, rchan, connfd, chunk.chunkstotal);
@@ -462,7 +486,7 @@ wrapper(connfd: ref Sys->FD,
         rchan: chan of array of byte)
 {
     rudplog("Wrapper started");
-    callbacks := hashtable->new(HASHSIZE, chan of ref Chunk);
+    callbacks := hashtable->snew(HASHSIZE, chan of ref Chunk);
     pidch := chan of int;
     spawn listener(connfd, callbacks, pidch, rchan);
     listenpid := <-pidch;
@@ -487,4 +511,9 @@ new(connfd: ref Sys->FD, tchan: chan of (array of byte, int, int)): chan of arra
     rchan := chan of array of byte;
     spawn wrapper(connfd, tchan, rchan);
     return rchan;
+}
+
+stats(): string
+{
+    return sys->sprint("Sent chunks: %d, failed %d", sentchunks, failedchunks);
 }

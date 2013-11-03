@@ -14,5 +14,13 @@ Hashtable: module{
 		all:	fn(h:self ref HashTable): list of HashNode[T];
 	};
 	new: fn[T](size:int, elem:T):ref HashTable[T];
+
+	# Synchronous interface for Hashtable. Using one chan for
+	# all the commands. When sending request, first int is one
+	# of the commands below, when reading answer - total number
+	# of returned elements. HFind and HAll always post something
+	# on the chan.
+	HInsert, HDelete, HFind, HAll, HDestroy: con iota;
+	snew: fn[T](size:int, elem:T): chan of (int, string, T);
 };
 

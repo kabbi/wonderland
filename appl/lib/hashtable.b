@@ -76,3 +76,35 @@ HashTable[T].all(h:self ref HashTable): list of HashNode
 			dl = (hd q) :: dl;
 	return dl;
 }
+
+
+snew[T](size: int, elem: T): chan of (int, string, T)
+{
+	c := chan of (int, string, T);
+	spawn shashtable(c, size);
+	return c;
+}
+
+shashtable[T](c: chan of (int, string, T), size: int)
+{
+	table := ref HashTable[T](array[size] of list of HashNode[T]);
+	while (1) {
+		(cmd, key, elem) := <-c;
+		case cmd {
+			HInsert =>
+				table.insert(key, elem);
+			HDelete =>
+				table.delete(key);
+			HFind =>
+				e := table.find(key);
+				c <-= ((e != nil), "", e);
+			HAll =>
+				elems := table.all();
+				c <-= (len elems, "", nil);
+				for (i := elems; i != nil; i = tl i)
+					c <-= (len elems, (hd i).key, (hd i).val);
+			HDestroy =>
+				return;
+		}
+	}
+}
