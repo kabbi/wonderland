@@ -52,9 +52,12 @@ init(nil: ref Context, argv: list of string)
 
 	arg->init(argv);
 	alg := "";
+	noauth := 0;
 	while ((opt := arg->opt()) != 0) {
 		if (opt == 'C') {
 			alg = arg->arg();
+		} else if (opt == 'A') {
+			noauth = 1;
 		} else
 			usage();
 	}
@@ -110,10 +113,14 @@ init(nil: ref Context, argv: list of string)
 
 	fd := ref Sys->FD;
 	#sys->fprint(stderr, "cpu: authenticating using alg '%s'\n", alg);		
-	(fd, err) = au->client(alg, ai, c.dfd);
-	if(fd == nil) {
-		sys->fprint(stderr, "cpu: authentication failed: %s\n", err);
-		raise "fail:authentication failure";
+	if (!noauth) {
+		(fd, err) = au->client(alg, ai, c.dfd);
+		if(fd == nil) {
+			sys->fprint(stderr, "cpu: authentication failed: %s\n", err);
+			raise "fail:authentication failure";
+		}
+	} else {
+		fd = c.dfd;
 	}
 
 	t := array of byte sys->sprint("%d\n%s\n", len (array of byte args)+1, args);
