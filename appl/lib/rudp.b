@@ -440,7 +440,7 @@ listener(connfd: ref Sys->FD, callbacks: ref HashTable[chan of ref Chunk],
         buffer := array [RECVBUFFERSIZE] of byte;
         bytesread := sys->read(connfd, buffer, len buffer);
 
-        if (bytesread <= 0)
+        if (bytesread < Udp4hdrlen)
             raise sys->sprint("fail:readerror");
 
         hdr := Udphdr.unpack(buffer[:Udp4hdrlen], Udp4hdrlen);
@@ -452,14 +452,14 @@ listener(connfd: ref Sys->FD, callbacks: ref HashTable[chan of ref Chunk],
         raddr := "udp!" + hdr.raddr.text() + "!" + string hdr.rport;
         buffer = buffer[Udp4hdrlen:];
 
-        if (bytesread < Udp4hdrlen)
-            continue;
-
         {
             chunk := Chunk.unpack(buffer);
             belongsto := chunk.belongsto.text();
             callback := callbacks.find(belongsto);
             rudplog("Searching for callback for " + belongsto);
+            # TODO: do we need better handling for acks?
+            if (callback == nil && len chunk.data == 0)
+                continue; # ignore an ack that we are not waiting for
             if (callback == nil)
             {
                 callback = chan of ref Chunk;
